@@ -1,0 +1,11 @@
+[package]
+name = "seqstore"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.86"
+bstr = "1.9.1"
+fs-err = "2.11.0"
+memmap2 = "0.9.4"
+varuint = "0.7.1"
