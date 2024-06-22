@@ -5,7 +5,12 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.86"
+arbitrary = { version = "1.3.2", features = ["derive"] }
 bstr = "1.9.1"
 fs-err = "2.11.0"
+indexmap = "2.2.6"
+log = "0.4.21"
 memmap2 = "0.9.4"
+rand = "0.8.5"
+simplelog = "0.12.2"
 varuint = "0.7.1"
