@@ -3,10 +3,10 @@ use std::{
     hash::Hash,
 };
 
-use anyhow::{anyhow, Context};
-use bstr::{BStr, ByteSlice};
+use bstr::{BStr, BString, ByteSlice};
 use indexmap::IndexMap;
 use log::trace;
+use thiserror::Error;
 
 use crate::{backing::Backing, raw_store::RawStore};
 
@@ -41,7 +41,7 @@ pub struct Checker<N> {
 }
 
 impl<N: Hash + Eq + Debug + Copy> Checker<N> {
-    pub fn new(file: Backing) -> anyhow::Result<Self> {
+    pub fn new(file: Backing) -> Result<Self, CheckerError> {
         Ok(Self {
             check: IndexMap::new(),
             names: IndexMap::new(),
@@ -49,7 +49,7 @@ impl<N: Hash + Eq + Debug + Copy> Checker<N> {
         })
     }
 
-    pub fn execute(&mut self, item: CheckItem<N>) -> anyhow::Result<()> {
+    pub fn execute(&mut self, item: CheckItem<N>) -> Result<(), CheckerError> {
         match item {
             CheckItem::Add(name, bytes) => {
                 let at = self.map.add(bytes)?;
@@ -62,13 +62,12 @@ impl<N: Hash + Eq + Debug + Copy> Checker<N> {
                 // debug!("removing {name:?}");
                 let at = self.names.swap_remove(&name).expect("removing name that was never inserted");
                 let check = self.check.swap_remove(&at).expect("removing location that was never added");
-                let stored = self.map.remove(at).context("could not get item")?;
+                let stored = self.map.remove(at)?;
                 if check != stored {
-                    Err(anyhow!(
-                        "mismatch: expected {:?}, found {:?}",
-                        BStr::new(&check),
-                        BStr::new(&stored)
-                    ))
+                    Err(CheckerError::Mismatch {
+                        expected: BString::new(check),
+                        found: BString::new(stored),
+                    })
                 } else {
                     Ok(())
                 }
@@ -76,19 +75,18 @@ impl<N: Hash + Eq + Debug + Copy> Checker<N> {
             CheckItem::Check(name) => {
                 let at = *self.names.get(&name).expect("checking name that was never inserted");
                 let check = self.check.get(&at).expect("checking location that was never added");
-                let stored = self.map.get(at).context("could not get item")?;
+                let stored = self.map.get(at)?;
                 if *check != stored {
-                    Err(anyhow!(
-                        "mismatch: expected {:?}, found {:?}",
-                        BStr::new(check),
-                        BStr::new(&stored)
-                    ))
+                    Err(CheckerError::Mismatch {
+                        expected: BString::new(check.to_owned()),
+                        found: BString::new(stored),
+                    })
                 } else {
                     Ok(())
                 }
             }
             CheckItem::CheckAll => self.check_all(),
-            CheckItem::Debug => crate::debug_map(&self.map),
+            CheckItem::Debug => crate::debug_map(&self.map).map_err(Into::into),
             CheckItem::Print => {
                 self.map.with_bytes(|b| trace!("{:?}", BStr::new(b.trim_end_with(|b| b == '\0'))));
                 Ok(())
@@ -96,7 +94,7 @@ impl<N: Hash + Eq + Debug + Copy> Checker<N> {
         }
     }
 
-    pub fn reopen(&mut self) -> anyhow::Result<()> {
+    pub fn reopen(&mut self) -> Result<(), CheckerError> {
         let map = std::mem::replace(&mut self.map, RawStore::new(Backing::new_anon()?)?);
         let backing = map.close()?;
         let map = RawStore::open(backing)?;
@@ -104,7 +102,7 @@ impl<N: Hash + Eq + Debug + Copy> Checker<N> {
         Ok(())
     }
 
-    pub fn check_all(&mut self) -> anyhow::Result<()> {
+    pub fn check_all(&mut self) -> Result<(), CheckerError> {
         for name in self.names.keys().copied().collect::<Vec<_>>() {
             self.execute(CheckItem::Check(name))?;
         }
@@ -122,4 +120,14 @@ impl<N: Hash + Eq + Debug + Copy> Checker<N> {
     pub fn keys(&self) -> impl ExactSizeIterator<Item = u64> + '_ {
         self.check.keys().copied()
     }
+}
+
+#[derive(Debug, Error)]
+pub enum CheckerError {
+    #[error(transparent)]
+    Map(#[from] crate::error::Error),
+    #[error("mismatch: expected {:?}, found {:?}", .expected, .found)]
+    Mismatch { expected: BString, found: BString },
+    #[error(transparent)]
+    Other(#[from] std::io::Error),
 }

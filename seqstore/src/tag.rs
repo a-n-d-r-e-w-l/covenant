@@ -1,9 +1,6 @@
 #![allow(clippy::unusual_byte_groupings)] // These are deliberate to make packed fields clearer
 
-use anyhow::anyhow;
-use bstr::BStr;
-
-use crate::backing::Backing;
+use crate::{backing::Backing, error::Error};
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub(crate) enum MagicTag {
@@ -23,14 +20,15 @@ impl MagicTag {
     pub(crate) const WRITTEN: u8 = 0b100_00000;
     pub(crate) const DELETED: u8 = 0b110_00000;
 
-    pub(crate) fn read(backing: &[u8], position: &mut usize) -> anyhow::Result<Self> {
-        fn read_with_length(tag: u8, backing: &[u8], position: &mut usize) -> anyhow::Result<u64> {
+    pub(crate) fn read(backing: &[u8], position: &mut usize) -> Result<Self, Error> {
+        fn read_with_length(tag: u8, backing: &[u8], position: &mut usize) -> Result<u64, Error> {
             let extra_bits = tag & 0b000_00_111;
             let len_bytes = (tag & 0b000_11_000) >> 3;
             if len_bytes == 0 {
                 return Ok(extra_bits as _);
             }
 
+            // TODO: Return error if does not fit
             let buffer = &backing[*position..*position + len_bytes as usize];
             *position += len_bytes as usize;
             let mut bytes = [0; 8];
@@ -46,7 +44,7 @@ impl MagicTag {
 
         let tag = backing[*position];
         *position += 1;
-        let got = match tag & Self::MASK {
+        match tag & Self::MASK {
             Self::START => Ok(Self::Start),
             Self::END => Ok(Self::End),
             Self::WRITING => Ok(Self::Writing {
@@ -58,18 +56,21 @@ impl MagicTag {
             Self::DELETED => Ok(Self::Deleted {
                 length: read_with_length(tag, backing, position)?,
             }),
-            other => Err(anyhow!(
-                "unknown tag 0b{other:b} 0x{tag:02X} at position 0x{:02X} - {:?} {:?}",
-                *position - 1,
-                BStr::new(&backing[*position - 3..*position]),
-                BStr::new(&backing[*position..*position + 3]),
-            )),
-        }?;
-        Ok(got)
+            _ => {
+                let mut surrounding = [0; 7];
+                let end = (*position + 3).clamp(0, backing.len());
+                surrounding[..end - *position].copy_from_slice(&backing[*position - 3..end]);
+                Err(Error::UnknownTag {
+                    position: *position,
+                    surrounding,
+                    byte: tag,
+                })
+            }
+        }
     }
 
-    pub(crate) fn write(self, backing: &mut Backing, position: &mut usize) -> anyhow::Result<()> {
-        fn write_with_length(backing: &mut Backing, position: &mut usize, length: u64, tag: u8) -> anyhow::Result<()> {
+    pub(crate) fn write(self, backing: &mut Backing, position: &mut usize) -> Result<(), Error> {
+        fn write_with_length(backing: &mut Backing, position: &mut usize, length: u64, tag: u8) -> Result<(), Error> {
             if length != 0 {
                 let needed_bits = 64 - length.leading_zeros();
                 let needed_bytes = needed_bits.saturating_sub(3).div_ceil(8); // 3 bits can be stored in tag
@@ -108,7 +109,7 @@ impl MagicTag {
         Ok(())
     }
 
-    pub(crate) fn write_exact(self, backing: &mut Backing, position: &mut usize, n: usize) -> anyhow::Result<()> {
+    pub(crate) fn write_exact(self, backing: &mut Backing, position: &mut usize, n: usize) -> Result<(), Error> {
         assert!(n <= 0b11 + 1, "length is too large to store item");
         let (tag, len) = match self {
             Self::Writing { length } => (Self::WRITING, length),

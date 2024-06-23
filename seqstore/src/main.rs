@@ -29,15 +29,15 @@ fn main() -> anyhow::Result<()> {
 
     fn make_backing() -> anyhow::Result<Backing> {
         if false {
-            let f = fs_err::OpenOptions::new()
+            let f = std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)
                 .create(true)
                 .truncate(true)
                 .open("file.bin")?;
-            Backing::new_file(f)
+            Backing::new_file(f).map_err(Into::into)
         } else {
-            Backing::new_anon()
+            Backing::new_anon().map_err(Into::into)
         }
     }
 

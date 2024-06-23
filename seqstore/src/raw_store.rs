@@ -1,7 +1,4 @@
-use anyhow::anyhow;
-use bstr::{BStr, ByteSlice};
-
-use crate::{backing::Backing, tag::MagicTag};
+use crate::{backing::Backing, error::Error, tag::MagicTag};
 
 #[cfg(feature = "debug_map")]
 pub mod checker;
@@ -18,7 +15,7 @@ impl RawStore {
     const HEADER_VERSION: [u8; 2] = [0x00, 0x00];
     const HEADER_LENGTH: usize = 9;
 
-    pub fn new(mut backing: Backing) -> anyhow::Result<Self> {
+    pub fn new(mut backing: Backing) -> Result<Self, Error> {
         let mut position = 0;
         MagicTag::Start.write(&mut backing, &mut position)?;
         backing.write(Self::HEADER_MAGIC, &mut position)?; // magic bytes
@@ -33,7 +30,7 @@ impl RawStore {
         })
     }
 
-    pub fn open(backing: Backing) -> anyhow::Result<Self> {
+    pub fn open(backing: Backing) -> Result<Self, Error> {
         let header = &backing[..Self::HEADER_LENGTH];
         let mut hpos = 0;
         let t = MagicTag::read(header, &mut hpos)?;
@@ -58,8 +55,12 @@ impl RawStore {
                     assert!(end.is_none());
                     end = Some(here);
                     let rest = &backing[pos..];
-                    if !rest.iter().all(|&b| b == 0) {
-                        return Err(anyhow!("data after end: {:?}", BStr::new(rest)));
+                    if let Some((idx, b)) = rest.iter().copied().enumerate().find(|(_, b)| *b != 0) {
+                        return Err(Error::DataAfterEnd {
+                            end: here,
+                            first_data_at: pos + idx,
+                            first_data: b,
+                        });
                     }
                     break;
                 }
@@ -79,17 +80,17 @@ impl RawStore {
                 }
             }
         }
-        let Some(end) = end else { return Err(anyhow!("no end tag found")) };
+        let Some(end) = end else { return Err(Error::NoEnd) };
 
         Ok(Self { backing, end, gaps })
     }
 
-    pub fn close(self) -> anyhow::Result<Backing> {
+    pub fn close(self) -> Result<Backing, Error> {
         self.backing.flush()?;
         Ok(self.backing)
     }
 
-    pub fn add(&mut self, bytes: &[u8]) -> anyhow::Result<u64> {
+    pub fn add(&mut self, bytes: &[u8]) -> Result<u64, Error> {
         let (mut position, expected_tag, old_gap) = {
             fn satisfies_length(new: u32, old: u32) -> bool {
                 new == old || new + 5 <= old
@@ -150,28 +151,30 @@ impl RawStore {
         self.backing.flush_range(start, end)?;
 
         self.backing[start] ^= MagicTag::WRITING ^ MagicTag::WRITTEN;
-        self.backing.map().flush_range(start, 1)?;
+        self.backing.map().flush_range(start, 1).map_err(Error::Flush)?;
 
         Ok(start as u64)
     }
 
-    pub fn get(&self, at: u64) -> anyhow::Result<Vec<u8>> {
+    pub fn get(&self, at: u64) -> Result<Vec<u8>, Error> {
         // TODO: Keys should include some marker to check the length to prevent overreads
         let mut position = at as usize;
         let tag = MagicTag::read(&self.backing, &mut position)?;
         match tag {
-            MagicTag::Writing { .. } => Err(anyhow!("previous writing attempt was incomplete: this entry is corrupt")),
+            MagicTag::Writing { .. } => Err(Error::EntryCorrupt { position: at as usize }),
             MagicTag::Written { length } => {
                 let b = &self.backing[position..position + length as usize];
                 Ok(b.to_owned())
             }
-            _ => Err(anyhow!(
-                "encountered incorrect tag {tag:?}, expecting MagicTag::Written {{ length: .. }}"
-            )),
+            other => Err(Error::IncorrectTag {
+                position: at as usize,
+                found: other.into(),
+                expected_kind: "Written",
+            }),
         }
     }
 
-    pub fn remove(&mut self, at: u64) -> anyhow::Result<Vec<u8>> {
+    pub fn remove(&mut self, at: u64) -> Result<Vec<u8>, Error> {
         let mut position = at as usize;
         let tag = MagicTag::read(&self.backing, &mut position)?;
         match tag {
@@ -181,7 +184,7 @@ impl RawStore {
             MagicTag::End => {
                 panic!("cannot remove end tag")
             }
-            MagicTag::Writing { .. } => Err(anyhow!("previous writing attempt was incomplete: this entry is corrupt")),
+            MagicTag::Writing { .. } => Err(Error::EntryCorrupt { position: at as usize }),
             MagicTag::Written { length } => {
                 // TODO: Genericize extraction [this is RawMap]
                 let segment = self.backing[position..position + length as usize].to_owned();
@@ -246,7 +249,10 @@ impl RawStore {
                     // Given how much easier it makes understanding the file, this will be left in for now.
                     // (though of course the storage area of a deleted tag is still left unspecified, so this behaviour cannot be relied on)
                     self.backing[position..position + length as usize].fill(0);
-                    self.backing.map().flush_range(at as usize, tag.written_length() + length as usize)?;
+                    self.backing
+                        .map()
+                        .flush_range(at as usize, tag.written_length() + length as usize)
+                        .map_err(Error::Flush)?;
 
                     self.gaps.push(Gap {
                         at: at as usize,
@@ -257,7 +263,7 @@ impl RawStore {
 
                 Ok(segment)
             }
-            MagicTag::Deleted { .. } => Err(anyhow!("attempted to delete already-deleted item")),
+            MagicTag::Deleted { .. } => Err(Error::AlreadyDeleted { position: at as usize }),
         }
     }
 
@@ -273,8 +279,12 @@ struct Gap {
     tag_len: u8,
 }
 
-pub(crate) fn debug_map(map: &RawStore) -> anyhow::Result<()> {
-    println!("\n === BEGIN CHECK === ");
+#[cfg(feature = "debug_map")]
+pub(crate) fn debug_map(map: &RawStore) -> Result<(), Error> {
+    use bstr::{BStr, ByteSlice};
+    use log::trace;
+
+    trace!("\n === BEGIN CHECK === ");
     let bytes = &map.backing[..];
     let header = &bytes[..RawStore::HEADER_LENGTH];
     let mut position = 0;
@@ -309,21 +319,21 @@ pub(crate) fn debug_map(map: &RawStore) -> anyhow::Result<()> {
             MagicTag::Writing { length } => {
                 let b = &bytes[position..position + length as usize];
                 position += length as usize;
-                println!("Writing - {:?}", BStr::new(b));
+                trace!("Writing - {:?}", BStr::new(b));
             }
             MagicTag::Written { length } => {
                 let b = &bytes[position..position + length as usize];
                 position += length as usize;
-                println!("Written - {:?}", BStr::new(b));
+                trace!("Written - {:?}", BStr::new(b));
             }
             MagicTag::Deleted { length } => {
                 let b = &bytes[position..position + length as usize];
                 position += length as usize;
-                println!("Deleted - {:?}", BStr::new(b));
+                trace!("Deleted - {:?}", BStr::new(b));
             }
         }
     }
     assert!(ended);
-    println!(" === END CHECK === \n");
+    trace!(" === END CHECK === \n");
     Ok(())
 }
