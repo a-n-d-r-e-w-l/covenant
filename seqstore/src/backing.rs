@@ -35,15 +35,19 @@ impl DerefMut for Backing {
 }
 
 impl Backing {
-    pub fn new_file(file: File) -> Result<Self, Error> {
+    pub unsafe fn new_file(file: File) -> Result<Self, Error> {
         let map = unsafe { memmap2::MmapMut::map_mut(&file).map_err(Error::Map)? };
-        Ok(Backing(BackingInner::File { map, file }))
+        Ok(Self(BackingInner::File { map, file }))
     }
 
     pub fn new_anon() -> Result<Self, Error> {
-        Ok(Backing(BackingInner::Anon(
-            memmap2::MmapMut::map_anon(256).map_err(Error::Map)?,
-        )))
+        Ok(Self(BackingInner::Anon(memmap2::MmapMut::map_anon(256).map_err(Error::Map)?)))
+    }
+
+    pub fn new_from_buffer(b: &[u8]) -> Result<Self, Error> {
+        let mut m = memmap2::MmapMut::map_anon(b.len()).map_err(Error::Map)?;
+        m[..b.len()].copy_from_slice(b);
+        Ok(Self(BackingInner::Anon(m)))
     }
 
     pub fn write(&mut self, b: &[u8], position: &mut usize) -> Result<(), Error> {
@@ -55,7 +59,7 @@ impl Backing {
         Ok(())
     }
 
-    fn resize_for(&mut self, len: usize) -> Result<(), Error> {
+    pub(crate) fn resize_for(&mut self, len: usize) -> Result<(), Error> {
         if self.len() <= len {
             self.resize_to(((len / 256) + 1) * 256)?;
         }

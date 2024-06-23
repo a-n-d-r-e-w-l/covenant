@@ -353,3 +353,138 @@ pub(crate) fn debug_map(map: &RawStore) -> Result<(), Error> {
     trace!(" === END CHECK === \n");
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    trait Byteable {
+        fn write_len(&self) -> usize;
+
+        fn write(&self, bytes: &mut [u8], position: &mut usize);
+    }
+
+    impl Byteable for [u8] {
+        fn write_len(&self) -> usize {
+            self.len()
+        }
+
+        fn write(&self, bytes: &mut [u8], position: &mut usize) {
+            bytes[*position..*position + self.len()].copy_from_slice(self);
+            *position += self.len();
+        }
+    }
+
+    impl Byteable for u8 {
+        fn write_len(&self) -> usize {
+            1
+        }
+
+        fn write(&self, bytes: &mut [u8], position: &mut usize) {
+            bytes[*position] = *self;
+            *position += 1;
+        }
+    }
+
+    impl<const N: usize> Byteable for [u8; N] {
+        fn write_len(&self) -> usize {
+            N
+        }
+
+        fn write(&self, bytes: &mut [u8], position: &mut usize) {
+            bytes[*position..*position + N].copy_from_slice(self);
+            *position += N;
+        }
+    }
+
+    impl<T: Byteable + ?Sized> Byteable for &T {
+        fn write_len(&self) -> usize {
+            <T as Byteable>::write_len(self)
+        }
+
+        fn write(&self, bytes: &mut [u8], position: &mut usize) {
+            <T as Byteable>::write(self, bytes, position)
+        }
+    }
+
+    impl Byteable for MagicTag {
+        fn write_len(&self) -> usize {
+            self.written_length()
+        }
+
+        fn write(&self, bytes: &mut [u8], position: &mut usize) {
+            self.write_buffer(bytes, position);
+        }
+    }
+
+    macro_rules! prepare_raw {
+        ($($e:expr),* $(,)?) => {{
+            let l = 0 $(+ Byteable::write_len(&$e))*;
+            let mut bytes = vec![0_u8; l];
+            let mut pos = 0;
+            $(
+            Byteable::write(&$e, &mut bytes, &mut pos);
+            )*
+            Backing::new_from_buffer(&bytes).unwrap()
+        }};
+    }
+
+    macro_rules! prepare {
+        ($($e:expr),* $(,)?) => {prepare_raw!(HEADER, $($e,)* MagicTag::End)};
+    }
+
+    const HEADER: &[u8] = b"\x1FPLFmap\x00\x00";
+
+    #[test]
+    fn test_header() {
+        let empty = [0; RawStore::HEADER_LENGTH];
+        for l in 0..RawStore::HEADER_LENGTH {
+            let backing = Backing::new_from_buffer(&empty[..l]).unwrap();
+            let e = RawStore::open(backing).unwrap_err();
+            assert!(matches!(e, OpenError::TooSmall(x) if x == l));
+        }
+        let backing = Backing::new_from_buffer(&empty[..RawStore::HEADER_LENGTH]).unwrap();
+        let e = RawStore::open(backing).unwrap_err();
+        assert!(!matches!(e, OpenError::TooSmall(_)));
+
+        let backing = Backing::new_from_buffer(HEADER).unwrap();
+        let e = RawStore::open(backing).unwrap_err();
+        assert!(matches!(e, OpenError::NoEnd), "{e:?}");
+
+        assert_eq!(HEADER, &prepare_raw!(MagicTag::Start, b"PLFmap", [0, 0])[..]);
+        let e = RawStore::open(prepare_raw!(MagicTag::End, RawStore::HEADER_MAGIC, [0, 0])).unwrap_err();
+        assert!(matches!(e, OpenError::Start(_)), "{e:?}");
+        let e = RawStore::open(prepare_raw!(0b011_00000, RawStore::HEADER_MAGIC, [0, 0])).unwrap_err();
+        assert!(
+            matches!(
+                e,
+                OpenError::General(Error::UnknownTag {
+                    position: 0,
+                    byte: 0b011_00000,
+                    ..
+                })
+            ),
+            "{e:?}"
+        );
+        let false_magic = b"PLfmap";
+        let e = RawStore::open(prepare_raw!(MagicTag::Start, false_magic, [0, 0])).unwrap_err();
+        assert!(matches!(e, OpenError::Magic), "{e:?}");
+        let e = RawStore::open(prepare_raw!(MagicTag::Start, RawStore::HEADER_MAGIC, [1, 0])).unwrap_err();
+        assert!(matches!(e, OpenError::UnknownVersion([1, 0])), "{e:?}");
+
+        RawStore::open(prepare!()).unwrap();
+    }
+
+    #[test]
+    fn partial_write() {
+        // TODO: Add OpenOptions equivalent to configure attempting repairs
+        let e = RawStore::open(prepare!(MagicTag::Writing { length: 10 }, [b'a'; 10])).unwrap_err();
+        assert!(matches!(
+            e,
+            OpenError::PartialWrite {
+                position: RawStore::HEADER_LENGTH,
+                length: 10
+            }
+        ));
+    }
+}

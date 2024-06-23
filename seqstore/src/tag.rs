@@ -58,8 +58,10 @@ impl MagicTag {
             }),
             _ => {
                 let mut surrounding = [0; 7];
+                *position -= 1;
                 let end = (*position + 3).clamp(0, backing.len());
-                surrounding[..end - *position].copy_from_slice(&backing[*position - 3..end]);
+                let o = 3_usize.saturating_sub(*position);
+                surrounding[o..(o + end - *position).clamp(0, 7)].copy_from_slice(&backing[position.saturating_sub(3)..end]);
                 Err(Error::UnknownTag {
                     position: *position,
                     surrounding,
@@ -70,7 +72,13 @@ impl MagicTag {
     }
 
     pub(crate) fn write(self, backing: &mut Backing, position: &mut usize) -> Result<(), Error> {
-        fn write_with_length(backing: &mut Backing, position: &mut usize, length: u64, tag: u8) -> Result<(), Error> {
+        backing.resize_for(*position + self.written_length())?;
+        self.write_buffer(backing, position);
+        Ok(())
+    }
+
+    pub(crate) fn write_buffer(self, buffer: &mut [u8], position: &mut usize) {
+        fn write_with_length(buffer: &mut [u8], position: &mut usize, length: u64, tag: u8) {
             if length != 0 {
                 let needed_bits = 64 - length.leading_zeros();
                 let needed_bytes = needed_bits.saturating_sub(3).div_ceil(8); // 3 bits can be stored in tag
@@ -92,21 +100,27 @@ impl MagicTag {
                     &bytes[tag_byte_idx..]
                 };
 
-                backing.write(bytes, position)
+                buffer[*position..*position + bytes.len()].copy_from_slice(bytes);
+                *position += bytes.len();
             } else {
-                backing.write(&[tag], position)
+                buffer[*position..*position + 1].copy_from_slice(&[tag]);
+                *position += 1;
             }
         }
 
         match self {
-            Self::Start => backing.write(&[Self::START | 0b11111], position),
-            Self::End => backing.write(&[Self::END], position),
-            Self::Writing { length } => write_with_length(backing, position, length, Self::WRITING),
-            Self::Written { length } => write_with_length(backing, position, length, Self::WRITTEN),
-            Self::Deleted { length } => write_with_length(backing, position, length, Self::DELETED),
-        }?;
-
-        Ok(())
+            Self::Start => {
+                buffer[*position..*position + 1].copy_from_slice(&[Self::START | 0b11111]);
+                *position += 1;
+            }
+            Self::End => {
+                buffer[*position..*position + 1].copy_from_slice(&[Self::END]);
+                *position += 1;
+            }
+            Self::Writing { length } => write_with_length(buffer, position, length, Self::WRITING),
+            Self::Written { length } => write_with_length(buffer, position, length, Self::WRITTEN),
+            Self::Deleted { length } => write_with_length(buffer, position, length, Self::DELETED),
+        }
     }
 
     pub(crate) fn write_exact(self, backing: &mut Backing, position: &mut usize, n: usize) -> Result<(), Error> {
@@ -203,6 +217,21 @@ mod tests {
             MagicTag::Writing { length }.write_exact(&mut backing, &mut 0, n).unwrap();
             let r = MagicTag::read(&backing, &mut 0).unwrap();
             assert_eq!(r, MagicTag::Writing { length });
+        }
+    }
+
+    #[test]
+    fn test_buffer_write() {
+        let mut buffer = [0; 4];
+        let mut backing = Backing::new_anon().unwrap();
+        for &length in LENGTHS {
+            let o = MagicTag::Writing { length };
+            o.write_buffer(&mut buffer, &mut 0);
+            o.write(&mut backing, &mut 0).unwrap();
+            let t = MagicTag::read(&buffer, &mut 0).unwrap();
+            let r = MagicTag::read(&backing, &mut 0).unwrap();
+            assert_eq!(t, o);
+            assert_eq!(t, r);
         }
     }
 

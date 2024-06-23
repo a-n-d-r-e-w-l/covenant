@@ -35,7 +35,7 @@ fn main() -> anyhow::Result<()> {
                 .create(true)
                 .truncate(true)
                 .open("file.bin")?;
-            Backing::new_file(f).map_err(Into::into)
+            unsafe { Backing::new_file(f) }.map_err(Into::into)
         } else {
             Backing::new_anon().map_err(Into::into)
         }
