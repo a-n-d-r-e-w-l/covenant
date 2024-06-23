@@ -84,7 +84,7 @@ fn main() -> anyhow::Result<()> {
         let keys = checker.keys().collect::<Vec<_>>();
         with(&mut read_dur, || {
             for key in keys {
-                let _ = checker.map().get(key).unwrap();
+                let _ = checker.map().get(key, ToOwned::to_owned).unwrap();
             }
         });
         // seqstore::debug_map(&checker.map)?;
@@ -101,7 +101,7 @@ fn main() -> anyhow::Result<()> {
     return Ok(());
 
     // let mut checker = Checker::new(make_backing()?)?;
-    // let mut debug_file = std::io::BufReader::new(fs_err::File::open("dbg.txt")?);
+    // let mut debug_file = std::io::BufReader::new(std::fs::File::open("dbg.txt")?);
     // for line in debug_file.lines() {
     //     let line = line?;
     //     match &line.split(' ').collect::<Vec<_>>()[..] {

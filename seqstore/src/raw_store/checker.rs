@@ -8,7 +8,7 @@ use indexmap::IndexMap;
 use log::trace;
 use thiserror::Error;
 
-use crate::{backing::Backing, raw_store::RawStore};
+use crate::{backing::Backing, raw_store::RawStore, Id};
 
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub enum CheckItem<'a, N> {
@@ -35,8 +35,8 @@ impl<N: Debug> Debug for CheckItem<'_, N> {
 
 #[derive(Debug)]
 pub struct Checker<N> {
-    check: IndexMap<u64, Vec<u8>>,
-    names: IndexMap<N, u64>,
+    check: IndexMap<Id, Vec<u8>>,
+    names: IndexMap<N, Id>,
     map: RawStore,
 }
 
@@ -62,7 +62,7 @@ impl<N: Hash + Eq + Debug + Copy> Checker<N> {
                 // debug!("removing {name:?}");
                 let at = self.names.swap_remove(&name).expect("removing name that was never inserted");
                 let check = self.check.swap_remove(&at).expect("removing location that was never added");
-                let stored = self.map.remove(at)?;
+                let stored = self.map.remove(at, ToOwned::to_owned)?;
                 if check != stored {
                     Err(CheckerError::Mismatch {
                         expected: BString::new(check),
@@ -75,7 +75,7 @@ impl<N: Hash + Eq + Debug + Copy> Checker<N> {
             CheckItem::Check(name) => {
                 let at = *self.names.get(&name).expect("checking name that was never inserted");
                 let check = self.check.get(&at).expect("checking location that was never added");
-                let stored = self.map.get(at)?;
+                let stored = self.map.get(at, ToOwned::to_owned)?;
                 if *check != stored {
                     Err(CheckerError::Mismatch {
                         expected: BString::new(check.to_owned()),
@@ -117,7 +117,7 @@ impl<N: Hash + Eq + Debug + Copy> Checker<N> {
         self.names.keys().copied()
     }
 
-    pub fn keys(&self) -> impl ExactSizeIterator<Item = u64> + '_ {
+    pub fn keys(&self) -> impl ExactSizeIterator<Item = Id> + '_ {
         self.check.keys().copied()
     }
 }

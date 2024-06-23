@@ -25,6 +25,14 @@ pub enum Error {
     AlreadyDeleted {
         position: usize,
     },
+    CannotReplaceDeleted {
+        position: usize,
+    },
+    MismatchedLengths {
+        position: usize,
+        new: usize,
+        old: usize,
+    },
 }
 
 impl Display for Error {
@@ -47,6 +55,13 @@ impl Display for Error {
             }
             Self::EntryCorrupt { position } => write!(f, "previous write at 0x{position:X} was interrupted, this entry is corrupt"),
             Self::AlreadyDeleted { position } => write!(f, "attempted to delete already deleted item at 0x{position:X}"),
+            Self::CannotReplaceDeleted { position } => write!(f, "attempted to replace deleted item at 0x{position:X}"),
+            Self::MismatchedLengths { position, new, old } => {
+                write!(
+                    f,
+                    "cannot replace data of length {new} at 0x{position:X} with data of length {old}"
+                )
+            }
         }
     }
 }

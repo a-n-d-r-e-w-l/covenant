@@ -1,7 +1,10 @@
+use std::num::NonZeroU64;
+
 use crate::{
     backing::Backing,
     error::{Error, OpenError},
     tag::MagicTag,
+    Id,
 };
 
 #[cfg(feature = "debug_map")]
@@ -106,7 +109,7 @@ impl RawStore {
         Ok(self.backing)
     }
 
-    pub fn add(&mut self, bytes: &[u8]) -> Result<u64, Error> {
+    pub fn add(&mut self, bytes: &[u8]) -> Result<Id, Error> {
         let (mut position, expected_tag, old_gap) = {
             fn satisfies_length(new: u32, old: u32) -> bool {
                 new == old || new + 5 <= old
@@ -169,29 +172,60 @@ impl RawStore {
         self.backing[start] ^= MagicTag::WRITING ^ MagicTag::WRITTEN;
         self.backing.map().flush_range(start, 1).map_err(Error::Flush)?;
 
-        Ok(start as u64)
+        Ok(Id(NonZeroU64::new(start as u64).expect("cannot write to 0")))
     }
 
-    pub fn get(&self, at: u64) -> Result<Vec<u8>, Error> {
-        // TODO: Keys should include some marker to check the length to prevent overreads
-        let mut position = at as usize;
+    pub fn replace<R>(&mut self, at: Id, with: &[u8], f: impl FnOnce(&[u8]) -> R) -> Result<R, Error> {
+        let at = at.0.get() as usize;
+        let mut position = at;
         let tag = MagicTag::read(&self.backing, &mut position)?;
         match tag {
-            MagicTag::Writing { .. } => Err(Error::EntryCorrupt { position: at as usize }),
             MagicTag::Written { length } => {
-                let b = &self.backing[position..position + length as usize];
-                Ok(b.to_owned())
+                if length as usize != with.len() {
+                    Err(Error::MismatchedLengths {
+                        position: at,
+                        new: with.len(),
+                        old: length as usize,
+                    })
+                } else {
+                    let r = f(&self.backing[position..position + with.len()]);
+                    self.backing[position..position + with.len()].copy_from_slice(with);
+                    self.backing.map().flush_range(position, with.len()).map_err(Error::Flush)?;
+                    Ok(r)
+                }
             }
+            MagicTag::Writing { .. } => Err(Error::EntryCorrupt { position: at }),
+            MagicTag::Deleted { .. } => Err(Error::CannotReplaceDeleted { position: at }),
             other => Err(Error::IncorrectTag {
-                position: at as usize,
+                position: at,
                 found: other.into(),
                 expected_kind: "Written",
             }),
         }
     }
 
-    pub fn remove(&mut self, at: u64) -> Result<Vec<u8>, Error> {
-        let mut position = at as usize;
+    pub fn get<R>(&self, at: Id, f: impl FnOnce(&[u8]) -> R) -> Result<R, Error> {
+        let at = at.0.get() as usize;
+        // TODO: Keys should include some marker to check the length to prevent overreads
+        let mut position = at;
+        let tag = MagicTag::read(&self.backing, &mut position)?;
+        match tag {
+            MagicTag::Writing { .. } => Err(Error::EntryCorrupt { position: at }),
+            MagicTag::Written { length } => {
+                let b = &self.backing[position..position + length as usize];
+                Ok(f(b))
+            }
+            other => Err(Error::IncorrectTag {
+                position: at,
+                found: other.into(),
+                expected_kind: "Written",
+            }),
+        }
+    }
+
+    pub fn remove<R>(&mut self, at: Id, f: impl FnOnce(&[u8]) -> R) -> Result<R, Error> {
+        let at = at.0.get() as usize;
+        let mut position = at;
         let tag = MagicTag::read(&self.backing, &mut position)?;
         match tag {
             MagicTag::Start => {
@@ -200,15 +234,15 @@ impl RawStore {
             MagicTag::End => {
                 panic!("cannot remove end tag")
             }
-            MagicTag::Writing { .. } => Err(Error::EntryCorrupt { position: at as usize }),
+            MagicTag::Writing { .. } => Err(Error::EntryCorrupt { position: at }),
             MagicTag::Written { length } => {
-                // TODO: Genericize extraction [this is RawMap]
-                let segment = self.backing[position..position + length as usize].to_owned();
+                let ret = f(&self.backing[position..position + length as usize]);
 
+                // TODO: Maybe wrap an inner function to minimise monomorphism?
                 let mut before = None;
                 let mut after = None;
                 for (i, gap) in self.gaps.iter().enumerate() {
-                    if gap.at + gap.length as usize + gap.tag_len as usize == at as usize {
+                    if gap.at + gap.length as usize + gap.tag_len as usize == at {
                         assert!(before.is_none());
                         before = Some(i);
                     } else if position + length as usize == gap.at {
@@ -225,7 +259,7 @@ impl RawStore {
                     }
                     (None, Some(a)) => {
                         let a = self.gaps.swap_remove(a);
-                        Some((at as usize, a.at + a.tag_len as usize + a.length as usize))
+                        Some((at, a.at + a.tag_len as usize + a.length as usize))
                     }
                     (Some(b), Some(a)) => {
                         let (b, a) = if b < a {
@@ -259,7 +293,7 @@ impl RawStore {
                         tag_len,
                     });
                 } else {
-                    self.backing[at as usize] ^= MagicTag::WRITTEN ^ MagicTag::DELETED;
+                    self.backing[at] ^= MagicTag::WRITTEN ^ MagicTag::DELETED;
 
                     // After running some benchmarks, whether we clear deleted bytes or not doesn't seem to have a significant impact on performance.
                     // Given how much easier it makes understanding the file, this will be left in for now.
@@ -267,19 +301,19 @@ impl RawStore {
                     self.backing[position..position + length as usize].fill(0);
                     self.backing
                         .map()
-                        .flush_range(at as usize, tag.written_length() + length as usize)
+                        .flush_range(at, tag.written_length() + length as usize)
                         .map_err(Error::Flush)?;
 
                     self.gaps.push(Gap {
-                        at: at as usize,
+                        at,
                         length: length as u32,
                         tag_len: tag.written_length() as u8,
                     });
                 }
 
-                Ok(segment)
+                Ok(ret)
             }
-            MagicTag::Deleted { .. } => Err(Error::AlreadyDeleted { position: at as usize }),
+            MagicTag::Deleted { .. } => Err(Error::AlreadyDeleted { position: at }),
         }
     }
 
