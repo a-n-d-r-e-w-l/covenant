@@ -1,17 +1,15 @@
 use std::{
-    collections::HashMap,
     fmt::{Debug, Formatter},
-    hash::Hash,
-    io::BufRead,
     time::{Duration, Instant},
 };
 
-use anyhow::{anyhow, Context};
 use arbitrary::{Arbitrary, Unstructured};
-use bstr::{BStr, ByteSlice};
-use indexmap::IndexMap;
-use log::{debug, info, trace, LevelFilter};
-use seqstore::FileMap;
+use bstr::BStr;
+use log::{debug, info, LevelFilter};
+use seqstore::{
+    raw_store::checker::{CheckItem, Checker},
+    Backing,
+};
 use rand::{Rng, SeedableRng};
 
 fn main() -> anyhow::Result<()> {
@@ -29,6 +27,20 @@ fn main() -> anyhow::Result<()> {
     let mut reopen_dur = Duration::from_secs(0);
     let mut total_bytes = 0;
 
+    fn make_backing() -> anyhow::Result<Backing> {
+        if false {
+            let f = fs_err::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open("file.bin")?;
+            Backing::new_file(f)
+        } else {
+            Backing::new_anon()
+        }
+    }
+
     for i in 0..4000 {
         // 0..4000
         if i % 100 == 0 {
@@ -39,7 +51,7 @@ fn main() -> anyhow::Result<()> {
 
         // let mut debug_file = std::io::BufWriter::new(fs_err::File::create("dbg.txt")?);
 
-        let mut checker = Checker::new()?;
+        let mut checker = Checker::new(make_backing()?)?;
         for j in 0..count {
             let mut bytes = vec![0_u8; rng.gen_range(2..=0b111_11111111)];
             total_bytes += bytes.len();
@@ -56,11 +68,11 @@ fn main() -> anyhow::Result<()> {
                     with(&mut write_dur, || checker.execute(CheckItem::Add(j, b)))?;
                 }
                 Action::Remove(i) => {
-                    let l = checker.names.len();
+                    let l = checker.names().len();
                     if l == 0 {
                         continue;
                     }
-                    let name = checker.names.keys().copied().nth(i % l).unwrap();
+                    let name = checker.names().nth(i % l).unwrap();
                     // writeln!(debug_file, "delete {name}")?;
                     with(&mut write_dur, || checker.execute(CheckItem::Remove(name)))?;
                 }
@@ -69,10 +81,10 @@ fn main() -> anyhow::Result<()> {
         // debug_file.flush()?;
         with(&mut check_dur, || checker.check_all())?;
 
-        let keys = checker.check.keys().copied().collect::<Vec<_>>();
+        let keys = checker.keys().collect::<Vec<_>>();
         with(&mut read_dur, || {
             for key in keys {
-                let _ = checker.map.get(key).unwrap();
+                let _ = checker.map().get(key).unwrap();
             }
         });
         // seqstore::debug_map(&checker.map)?;
@@ -88,7 +100,7 @@ fn main() -> anyhow::Result<()> {
     info!("Open : {:?}", reopen_dur);
     return Ok(());
 
-    // let mut checker = Checker::new()?;
+    // let mut checker = Checker::new(make_backing()?)?;
     // let mut debug_file = std::io::BufReader::new(fs_err::File::open("dbg.txt")?);
     // for line in debug_file.lines() {
     //     let line = line?;
@@ -109,7 +121,7 @@ fn main() -> anyhow::Result<()> {
     // checker.check_all()?;
     // return Ok(());
 
-    // let mut map = Checker::new()?;
+    // let mut map = Checker::new(make_backing()?)?;
     // for item in [
     //     CheckItem::Add("a", &[b'a'; 20]),
     //     CheckItem::Add("b", &[b'b'; 20]),
@@ -159,120 +171,5 @@ impl Debug for Action<'_> {
             Self::Add(bytes) => f.debug_tuple("Add").field(&BStr::new(bytes)).finish(),
             Self::Remove(idx) => f.debug_tuple("Remove").field(idx).finish(),
         }
-    }
-}
-
-#[derive(Copy, Clone, Eq, PartialEq)]
-enum CheckItem<'a, N> {
-    Add(N, &'a [u8]),
-    Remove(N),
-    Check(N),
-    CheckAll,
-    Debug,
-    Print,
-}
-
-impl<N: Debug> Debug for CheckItem<'_, N> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Add(name, bytes) => f.debug_tuple("Add").field(name).field(&BStr::new(bytes)).finish(),
-            Self::Remove(name) => f.debug_tuple("Remove").field(name).finish(),
-            Self::Check(name) => f.debug_tuple("Check").field(name).finish(),
-            Self::CheckAll => f.debug_tuple("CheckAll").finish(),
-            Self::Debug => f.debug_tuple("Debug").finish(),
-            Self::Print => f.debug_tuple("Print").finish(),
-        }
-    }
-}
-
-#[derive(Debug)]
-struct Checker<N> {
-    check: IndexMap<u64, Vec<u8>>,
-    names: IndexMap<N, u64>,
-    map: FileMap,
-}
-
-impl<N: Hash + Eq + Debug + Copy> Checker<N> {
-    fn new() -> anyhow::Result<Self> {
-        let b = if false {
-            Some(
-                fs_err::OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .open("file.bin")?,
-            )
-        } else {
-            None
-        };
-        Ok(Self {
-            check: IndexMap::new(),
-            names: IndexMap::new(),
-            map: FileMap::new(b)?,
-        })
-    }
-
-    fn execute(&mut self, item: CheckItem<N>) -> anyhow::Result<()> {
-        match item {
-            CheckItem::Add(name, bytes) => {
-                let at = self.map.add(bytes)?;
-                assert!(self.names.insert(name, at).is_none());
-                assert!(self.check.insert(at, bytes.to_vec()).is_none());
-                // debug!("{name:?} stored at {at}");
-                Ok(())
-            }
-            CheckItem::Remove(name) => {
-                // debug!("removing {name:?}");
-                let at = self.names.swap_remove(&name).expect("removing name that was never inserted");
-                let check = self.check.swap_remove(&at).expect("removing location that was never added");
-                let stored = self.map.remove(at).context("could not get item")?;
-                if check != stored {
-                    Err(anyhow!(
-                        "mismatch: expected {:?}, found {:?}",
-                        BStr::new(&check),
-                        BStr::new(&stored)
-                    ))
-                } else {
-                    Ok(())
-                }
-            }
-            CheckItem::Check(name) => {
-                let at = *self.names.get(&name).expect("checking name that was never inserted");
-                let check = self.check.get(&at).expect("checking location that was never added");
-                let stored = self.map.get(at).context("could not get item")?;
-                if *check != stored {
-                    Err(anyhow!(
-                        "mismatch: expected {:?}, found {:?}",
-                        BStr::new(check),
-                        BStr::new(&stored)
-                    ))
-                } else {
-                    Ok(())
-                }
-            }
-            CheckItem::CheckAll => self.check_all(),
-            CheckItem::Debug => seqstore::debug_map(&self.map),
-            CheckItem::Print => {
-                let b = &self.map.backing[..];
-                trace!("{:?}", BStr::new(b.trim_end_with(|b| b == '\0')));
-                Ok(())
-            }
-        }
-    }
-
-    fn reopen(&mut self) -> anyhow::Result<()> {
-        let map = std::mem::replace(&mut self.map, FileMap::new(None).unwrap());
-        let backing = map.close()?;
-        let map = FileMap::open(backing)?;
-        self.map = map;
-        Ok(())
-    }
-
-    fn check_all(&mut self) -> anyhow::Result<()> {
-        for name in self.names.keys().copied().collect::<Vec<_>>() {
-            self.execute(CheckItem::Check(name))?;
-        }
-        Ok(())
     }
 }

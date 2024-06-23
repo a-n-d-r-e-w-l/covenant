@@ -14,3 +14,7 @@ memmap2 = "0.9.4"
 rand = "0.8.5"
 simplelog = "0.12.2"
 varuint = "0.7.1"
+
+[features]
+default = ["debug_map"] # TEMP: This is only default for now
+debug_map = []
