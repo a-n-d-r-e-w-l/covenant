@@ -25,12 +25,6 @@ pub enum Error {
     AlreadyDeleted {
         position: usize,
     },
-    DataAfterEnd {
-        end: usize,
-        first_data_at: usize,
-        first_data: u8,
-    },
-    NoEnd,
 }
 
 impl Display for Error {
@@ -53,19 +47,31 @@ impl Display for Error {
             }
             Self::EntryCorrupt { position } => write!(f, "previous write at 0x{position:X} was interrupted, this entry is corrupt"),
             Self::AlreadyDeleted { position } => write!(f, "attempted to delete already deleted item at 0x{position:X}"),
-            Self::DataAfterEnd {
-                end,
-                first_data_at,
-                first_data,
-            } => write!(
-                f,
-                "end tag is at 0x{end:X}, but 0b{first_data:08b} was found after it at 0x{first_data_at:X}"
-            ),
-            Self::NoEnd => {
-                write!(f, "no end tag found")
-            }
         }
     }
+}
+
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum OpenError {
+    #[error(transparent)]
+    General(#[from] Error),
+    #[error("data of size {} is too small to hold header of size {}", .0, crate::raw_store::RawStore::HEADER_LENGTH)]
+    TooSmall(usize),
+    #[error("expected start tag, found {:?}", .0)]
+    Start(Tag),
+    #[error("invalid magic bytes")]
+    Magic,
+    #[error("unknown version {:?}", .0)]
+    UnknownVersion([u8; 2]),
+    #[error("found start tag at 0x{:X}", .0)]
+    FoundStart(usize),
+    #[error("found incomplete write of length {} at 0x{:X}", .length, .position)]
+    PartialWrite { position: usize, length: usize },
+    #[error("end tag is at 0x{end:X}, but 0b{first_data:08b} was found after it at 0x{first_data_at:X}")]
+    DataAfterEnd { end: usize, first_data_at: usize, first_data: u8 },
+    #[error("no end tag found")]
+    NoEnd,
 }
 
 // This exists to prevent a `private_interfaces` warning without exposing MagicTag

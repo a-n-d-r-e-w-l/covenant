@@ -126,6 +126,8 @@ impl<N: Hash + Eq + Debug + Copy> Checker<N> {
 pub enum CheckerError {
     #[error(transparent)]
     Map(#[from] crate::error::Error),
+    #[error(transparent)]
+    Open(#[from] crate::error::OpenError),
     #[error("mismatch: expected {:?}, found {:?}", .expected, .found)]
     Mismatch { expected: BString, found: BString },
     #[error(transparent)]

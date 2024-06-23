@@ -1,4 +1,8 @@
-use crate::{backing::Backing, error::Error, tag::MagicTag};
+use crate::{
+    backing::Backing,
+    error::{Error, OpenError},
+    tag::MagicTag,
+};
 
 #[cfg(feature = "debug_map")]
 pub mod checker;
@@ -13,7 +17,7 @@ pub struct RawStore {
 impl RawStore {
     const HEADER_MAGIC: &'static [u8] = b"PLFmap";
     const HEADER_VERSION: [u8; 2] = [0x00, 0x00];
-    const HEADER_LENGTH: usize = 9;
+    pub(crate) const HEADER_LENGTH: usize = 9;
 
     pub fn new(mut backing: Backing) -> Result<Self, Error> {
         let mut position = 0;
@@ -30,15 +34,27 @@ impl RawStore {
         })
     }
 
-    pub fn open(backing: Backing) -> Result<Self, Error> {
+    pub fn open(backing: Backing) -> Result<Self, OpenError> {
+        if backing.len() < Self::HEADER_LENGTH {
+            return Err(OpenError::TooSmall(backing.len()));
+        }
         let header = &backing[..Self::HEADER_LENGTH];
         let mut hpos = 0;
         let t = MagicTag::read(header, &mut hpos)?;
-        assert_eq!(t, MagicTag::Start);
-        assert_eq!(&header[hpos..hpos + Self::HEADER_MAGIC.len()], Self::HEADER_MAGIC);
+        if t != MagicTag::Start {
+            return Err(OpenError::Start(t.into()));
+        }
+        if &header[hpos..hpos + Self::HEADER_MAGIC.len()] != Self::HEADER_MAGIC {
+            return Err(OpenError::Magic);
+        }
         hpos += Self::HEADER_MAGIC.len();
-        assert_eq!(&header[hpos..hpos + Self::HEADER_VERSION.len()], Self::HEADER_VERSION);
+        let v: [u8; 2] = (&header[hpos..hpos + Self::HEADER_VERSION.len()]).try_into().unwrap();
+        if v[..] != Self::HEADER_VERSION {
+            return Err(OpenError::UnknownVersion(v));
+        }
         hpos += Self::HEADER_VERSION.len();
+        // This should not be possible to hit, but is kept to ensure that the reading checks
+        // are kept in line with changes to the header size
         assert_eq!(hpos, header.len());
 
         let mut pos = Self::HEADER_LENGTH;
@@ -48,15 +64,12 @@ impl RawStore {
             let here = pos;
             let tag = MagicTag::read(&backing, &mut pos)?;
             match tag {
-                MagicTag::Start => {
-                    panic!()
-                }
+                MagicTag::Start => return Err(OpenError::FoundStart(here)),
                 MagicTag::End => {
-                    assert!(end.is_none());
                     end = Some(here);
                     let rest = &backing[pos..];
                     if let Some((idx, b)) = rest.iter().copied().enumerate().find(|(_, b)| *b != 0) {
-                        return Err(Error::DataAfterEnd {
+                        return Err(OpenError::DataAfterEnd {
                             end: here,
                             first_data_at: pos + idx,
                             first_data: b,
@@ -64,8 +77,11 @@ impl RawStore {
                     }
                     break;
                 }
-                MagicTag::Writing { .. } => {
-                    panic!()
+                MagicTag::Writing { length } => {
+                    return Err(OpenError::PartialWrite {
+                        position: here,
+                        length: length as usize,
+                    });
                 }
                 MagicTag::Written { length } => {
                     pos += length as usize;
@@ -80,7 +96,7 @@ impl RawStore {
                 }
             }
         }
-        let Some(end) = end else { return Err(Error::NoEnd) };
+        let Some(end) = end else { return Err(OpenError::NoEnd) };
 
         Ok(Self { backing, end, gaps })
     }
