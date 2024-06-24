@@ -5,6 +5,7 @@ pub use error::{Error, OpenError, RetainError};
 
 pub(crate) mod backing;
 pub(crate) mod tag;
+pub(crate) mod util;
 
 mod error;
 pub mod raw_store;

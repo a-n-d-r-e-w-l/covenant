@@ -1,6 +1,6 @@
 use std::fmt::{Debug, Display, Formatter};
 
-use bstr::BStr;
+use bstr::{BStr, BString};
 use thiserror::Error;
 
 use crate::Id;
@@ -35,6 +35,9 @@ pub enum Error {
         new: usize,
         old: usize,
     },
+    InvalidVarint {
+        position: usize,
+    },
 }
 
 impl Display for Error {
@@ -64,6 +67,9 @@ impl Display for Error {
                     "cannot replace data of length {new} at 0x{position:X} with data of length {old}"
                 )
             }
+            Self::InvalidVarint { position } => {
+                write!(f, "invalid packed integer or EOF at 0x{:X}", position)
+            }
         }
     }
 }
@@ -73,10 +79,14 @@ impl Display for Error {
 pub enum OpenError {
     #[error(transparent)]
     General(#[from] Error),
-    #[error("data of size {} is too small to hold header of size {}", .0, crate::raw_store::RawStore::HEADER_LENGTH)]
-    TooSmall(usize),
+    #[error("data of size {} is too small to hold header of size {}", .found, .expected)]
+    TooSmall { found: usize, expected: usize },
     #[error("invalid magic bytes")]
     Magic,
+    #[error("mismatch between spec magic: expected {} bytes, found {}", .expected, .found)]
+    SpecMagicLen { found: usize, expected: usize },
+    #[error("mismatch between spec magic: expected {:?}, found {:?}", .expected, .found)]
+    SpecMagic { found: BString, expected: BString },
     #[error("unknown version {:?}", .0)]
     UnknownVersion([u8; 2]),
     #[error("found incomplete write of length {} at 0x{:X}", .length, .position)]
