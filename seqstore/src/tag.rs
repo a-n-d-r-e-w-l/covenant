@@ -4,7 +4,6 @@ use crate::{backing::Backing, error::Error};
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub(crate) enum MagicTag {
-    Start,
     End,
     Writing { length: u64 },
     Written { length: u64 },
@@ -14,7 +13,6 @@ pub(crate) enum MagicTag {
 impl MagicTag {
     pub(crate) const MASK: u8 = 0b111_00000;
 
-    pub(crate) const START: u8 = 0b000_00000;
     pub(crate) const END: u8 = 0b111_00000;
     pub(crate) const WRITING: u8 = 0b101_00000;
     pub(crate) const WRITTEN: u8 = 0b100_00000;
@@ -45,7 +43,6 @@ impl MagicTag {
         let tag = backing[*position];
         *position += 1;
         match tag & Self::MASK {
-            Self::START => Ok(Self::Start),
             Self::END => Ok(Self::End),
             Self::WRITING => Ok(Self::Writing {
                 length: read_with_length(tag, backing, position)?,
@@ -109,10 +106,6 @@ impl MagicTag {
         }
 
         match self {
-            Self::Start => {
-                buffer[*position..*position + 1].copy_from_slice(&[Self::START | 0b11111]);
-                *position += 1;
-            }
             Self::End => {
                 buffer[*position..*position + 1].copy_from_slice(&[Self::END]);
                 *position += 1;
@@ -160,7 +153,7 @@ impl MagicTag {
 
     pub(crate) fn written_length(self) -> usize {
         match self {
-            MagicTag::Start | MagicTag::End => 1,
+            MagicTag::End => 1,
             MagicTag::Writing { length } | MagicTag::Written { length } | MagicTag::Deleted { length } => {
                 let needed_bits = 64 - length.leading_zeros();
                 let needed_bytes = needed_bits.saturating_sub(3).div_ceil(8); // 3 bits can be stored in tag
@@ -191,6 +184,25 @@ mod tests {
     use super::*;
 
     const LENGTHS: &[u64] = &[0, 3, 6, 7, 8, 9, 0xFF, 0x7_FF, 0x8_FF, 0b1111111111, 0b10000000000, 0x7_FF_FF_FF];
+
+    #[test]
+    fn no_overlap() {
+        let items = [MagicTag::END, MagicTag::WRITING, MagicTag::WRITTEN, MagicTag::DELETED, 0];
+        let iter = items.iter().copied().enumerate().flat_map(|(i, t)| {
+            items
+                .iter()
+                .copied()
+                .enumerate()
+                .map(move |(j, s)| ((i, j), (t & MagicTag::MASK, s & MagicTag::MASK)))
+        });
+
+        for ((i, j), (t, s)) in iter {
+            if i == j {
+                continue;
+            }
+            assert_ne!(t, s)
+        }
+    }
 
     #[test]
     #[should_panic(expected = "length is too large to store item [134217728]")]

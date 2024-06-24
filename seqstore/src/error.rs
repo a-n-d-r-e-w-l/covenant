@@ -73,14 +73,10 @@ pub enum OpenError {
     General(#[from] Error),
     #[error("data of size {} is too small to hold header of size {}", .0, crate::raw_store::RawStore::HEADER_LENGTH)]
     TooSmall(usize),
-    #[error("expected start tag, found {:?}", .0)]
-    Start(Tag),
     #[error("invalid magic bytes")]
     Magic,
     #[error("unknown version {:?}", .0)]
     UnknownVersion([u8; 2]),
-    #[error("found start tag at 0x{:X}", .0)]
-    FoundStart(usize),
     #[error("found incomplete write of length {} at 0x{:X}", .length, .position)]
     PartialWrite { position: usize, length: usize },
     #[error("end tag is at 0x{end:X}, but 0b{first_data:08b} was found after it at 0x{first_data_at:X}")]

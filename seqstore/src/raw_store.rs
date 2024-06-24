@@ -18,13 +18,12 @@ pub struct RawStore {
 }
 
 impl RawStore {
-    const HEADER_MAGIC: &'static [u8] = b"PLFmap";
+    const HEADER_MAGIC: &'static [u8] = b"\x1FPLFmap";
     const HEADER_VERSION: [u8; 2] = [0x00, 0x00];
     pub(crate) const HEADER_LENGTH: usize = 9;
 
     pub fn new(mut backing: Backing) -> Result<Self, Error> {
         let mut position = 0;
-        MagicTag::Start.write(&mut backing, &mut position)?;
         backing.write(Self::HEADER_MAGIC, &mut position)?; // magic bytes
         backing.write(&Self::HEADER_VERSION, &mut position)?; // header version
         debug_assert_eq!(position, Self::HEADER_LENGTH);
@@ -42,15 +41,10 @@ impl RawStore {
             return Err(OpenError::TooSmall(backing.len()));
         }
         let header = &backing[..Self::HEADER_LENGTH];
-        let mut hpos = 0;
-        let t = MagicTag::read(header, &mut hpos)?;
-        if t != MagicTag::Start {
-            return Err(OpenError::Start(t.into()));
-        }
-        if &header[hpos..hpos + Self::HEADER_MAGIC.len()] != Self::HEADER_MAGIC {
+        if &header[..Self::HEADER_MAGIC.len()] != Self::HEADER_MAGIC {
             return Err(OpenError::Magic);
         }
-        hpos += Self::HEADER_MAGIC.len();
+        let mut hpos = Self::HEADER_MAGIC.len();
         let v: [u8; 2] = (&header[hpos..hpos + Self::HEADER_VERSION.len()]).try_into().unwrap();
         if v[..] != Self::HEADER_VERSION {
             return Err(OpenError::UnknownVersion(v));
@@ -67,7 +61,6 @@ impl RawStore {
             let here = pos;
             let tag = MagicTag::read(&backing, &mut pos)?;
             match tag {
-                MagicTag::Start => return Err(OpenError::FoundStart(here)),
                 MagicTag::End => {
                     end = Some(here);
                     let rest = &backing[pos..];
@@ -228,9 +221,6 @@ impl RawStore {
         let mut position = at;
         let tag = MagicTag::read(&self.backing, &mut position)?;
         match tag {
-            MagicTag::Start => {
-                panic!("cannot remove start tag")
-            }
             MagicTag::End => {
                 panic!("cannot remove end tag")
             }
@@ -337,13 +327,8 @@ pub(crate) fn debug_map(map: &RawStore) -> Result<(), Error> {
     trace!("\n === BEGIN CHECK === ");
     let bytes = &map.backing[..];
     let header = &bytes[..RawStore::HEADER_LENGTH];
-    let mut position = 0;
-    let t = MagicTag::read(header, &mut position)?;
-    assert_eq!(t, MagicTag::Start);
-    assert_eq!(
-        &header[position..position + RawStore::HEADER_MAGIC.len()],
-        RawStore::HEADER_MAGIC
-    );
+    assert_eq!(&header[..RawStore::HEADER_MAGIC.len()], RawStore::HEADER_MAGIC);
+    let mut position = RawStore::HEADER_MAGIC.len();
     position += RawStore::HEADER_MAGIC.len();
     assert_eq!(&header[position..position + 2], &RawStore::HEADER_VERSION);
     position += 2;
@@ -352,9 +337,6 @@ pub(crate) fn debug_map(map: &RawStore) -> Result<(), Error> {
     while position < bytes.len() {
         let tag = MagicTag::read(bytes, &mut position)?;
         match tag {
-            MagicTag::Start => {
-                panic!("start tag encountered")
-            }
             MagicTag::End => {
                 let b = bytes[position..].iter().find(|b| **b != 0x00);
                 assert!(
@@ -485,25 +467,13 @@ mod tests {
         let e = RawStore::open(backing).unwrap_err();
         assert!(matches!(e, OpenError::NoEnd), "{e:?}");
 
-        assert_eq!(HEADER, &prepare_raw!(MagicTag::Start, b"PLFmap", [0, 0])[..]);
-        let e = RawStore::open(prepare_raw!(MagicTag::End, RawStore::HEADER_MAGIC, [0, 0])).unwrap_err();
-        assert!(matches!(e, OpenError::Start(_)), "{e:?}");
-        let e = RawStore::open(prepare_raw!(0b011_00000, RawStore::HEADER_MAGIC, [0, 0])).unwrap_err();
-        assert!(
-            matches!(
-                e,
-                OpenError::General(Error::UnknownTag {
-                    position: 0,
-                    byte: 0b011_00000,
-                    ..
-                })
-            ),
-            "{e:?}"
-        );
-        let false_magic = b"PLfmap";
-        let e = RawStore::open(prepare_raw!(MagicTag::Start, false_magic, [0, 0])).unwrap_err();
+        assert_eq!(HEADER, &prepare_raw!(b"\x1FPLFmap", [0, 0])[..]);
+        let e = RawStore::open(prepare_raw!(RawStore::HEADER_MAGIC, [0, 0])).unwrap_err();
+        assert!(matches!(e, OpenError::NoEnd), "{e:?}");
+        let false_magic = b"\x1FPLfmap";
+        let e = RawStore::open(prepare_raw!(false_magic, [0, 0])).unwrap_err();
         assert!(matches!(e, OpenError::Magic), "{e:?}");
-        let e = RawStore::open(prepare_raw!(MagicTag::Start, RawStore::HEADER_MAGIC, [1, 0])).unwrap_err();
+        let e = RawStore::open(prepare_raw!(RawStore::HEADER_MAGIC, [1, 0])).unwrap_err();
         assert!(matches!(e, OpenError::UnknownVersion([1, 0])), "{e:?}");
 
         RawStore::open(prepare!()).unwrap();
