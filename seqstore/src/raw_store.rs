@@ -1,8 +1,8 @@
-use std::num::NonZeroU64;
+use std::{num::NonZeroU64, ops::ControlFlow};
 
 use crate::{
     backing::Backing,
-    error::{Error, OpenError},
+    error::{Error, OpenError, RetainError},
     tag::MagicTag,
     Id,
 };
@@ -228,83 +228,162 @@ impl RawStore {
             MagicTag::Written { length } => {
                 let ret = f(&self.backing[position..position + length as usize]);
 
-                // TODO: Maybe wrap an inner function to minimise monomorphism?
-                let mut before = None;
-                let mut after = None;
-                for (i, gap) in self.gaps.iter().enumerate() {
-                    if gap.at + gap.length as usize + gap.tag_len as usize == at {
-                        assert!(before.is_none());
-                        before = Some(i);
-                    } else if position + length as usize == gap.at {
-                        assert!(after.is_none());
-                        after = Some(i);
-                    }
-                }
-
-                let s = match (before, after) {
-                    (None, None) => None,
-                    (Some(b), None) => {
-                        let b = self.gaps.swap_remove(b);
-                        Some((b.at, position + length as usize))
-                    }
-                    (None, Some(a)) => {
-                        let a = self.gaps.swap_remove(a);
-                        Some((at, a.at + a.tag_len as usize + a.length as usize))
-                    }
-                    (Some(b), Some(a)) => {
-                        let (b, a) = if b < a {
-                            let a = self.gaps.swap_remove(a);
-                            let b = self.gaps.swap_remove(b);
-                            (b, a)
-                        } else {
-                            let b = self.gaps.swap_remove(b);
-                            let a = self.gaps.swap_remove(a);
-                            (b, a)
-                        };
-                        Some((b.at, a.at + a.tag_len as usize + a.length as usize))
-                    }
-                };
-
-                if let Some((start, end)) = s {
-                    assert!(start < end);
-                    let gap_len = end - start;
-                    let (tag_len, len) = MagicTag::calc_tag_len(gap_len);
-                    position = start;
-
-                    MagicTag::Deleted { length: len as u64 }.write_exact(&mut self.backing, &mut position, tag_len as usize)?;
-                    assert_eq!(position + len, end);
-
-                    self.backing[position..end].fill(0);
-                    self.backing.flush_range(start, end)?;
-
-                    self.gaps.push(Gap {
-                        at: start,
-                        length: len as u32,
-                        tag_len,
-                    });
-                } else {
-                    self.backing[at] ^= MagicTag::WRITTEN ^ MagicTag::DELETED;
-
-                    // After running some benchmarks, whether we clear deleted bytes or not doesn't seem to have a significant impact on performance.
-                    // Given how much easier it makes understanding the file, this will be left in for now.
-                    // (though of course the storage area of a deleted tag is still left unspecified, so this behaviour cannot be relied on)
-                    self.backing[position..position + length as usize].fill(0);
-                    self.backing
-                        .map()
-                        .flush_range(at, tag.written_length() + length as usize)
-                        .map_err(Error::Flush)?;
-
-                    self.gaps.push(Gap {
-                        at,
-                        length: length as u32,
-                        tag_len: tag.written_length() as u8,
-                    });
-                }
+                self.erase(&mut { at }, position - at, length as usize)?;
 
                 Ok(ret)
             }
             MagicTag::Deleted { .. } => Err(Error::AlreadyDeleted { position: at }),
         }
+    }
+
+    fn erase(&mut self, position: &mut usize, tag_len: usize, length: usize) -> Result<(), Error> {
+        let at = *position;
+        let mut before = None;
+        let mut after = None;
+        for (i, gap) in self.gaps.iter().enumerate() {
+            if gap.at + gap.length as usize + gap.tag_len as usize == at {
+                assert!(before.is_none());
+                before = Some(i);
+            } else if *position + tag_len + length == gap.at {
+                assert!(after.is_none());
+                after = Some(i);
+            }
+        }
+
+        let s = match (before, after) {
+            (None, None) => None,
+            (Some(b), None) => {
+                let b = self.gaps.swap_remove(b);
+                Some((b.at, *position + tag_len + length))
+            }
+            (None, Some(a)) => {
+                let a = self.gaps.swap_remove(a);
+                Some((at, a.at + a.tag_len as usize + a.length as usize))
+            }
+            (Some(b), Some(a)) => {
+                let (b, a) = if b < a {
+                    let a = self.gaps.swap_remove(a);
+                    let b = self.gaps.swap_remove(b);
+                    (b, a)
+                } else {
+                    let b = self.gaps.swap_remove(b);
+                    let a = self.gaps.swap_remove(a);
+                    (b, a)
+                };
+                Some((b.at, a.at + a.tag_len as usize + a.length as usize))
+            }
+        };
+
+        if let Some((start, end)) = s {
+            assert!(start < end);
+            let gap_len = end - start;
+            let (tag_len, len) = MagicTag::calc_tag_len(gap_len);
+            *position = start;
+
+            MagicTag::Deleted { length: len as u64 }.write_exact(&mut self.backing, position, tag_len as usize)?;
+            assert_eq!(*position + len, end);
+
+            self.backing[*position..end].fill(0);
+            self.backing.flush_range(start, end)?;
+            *position = end;
+
+            self.gaps.push(Gap {
+                at: start,
+                length: len as u32,
+                tag_len,
+            });
+        } else {
+            self.backing[at] = MagicTag::DELETED | (self.backing[at] & !MagicTag::MASK);
+
+            // After running some benchmarks, whether we clear deleted bytes or not doesn't seem to have a significant impact on performance.
+            // Given how much easier it makes understanding the file, this will be left in for now.
+            // (though of course the storage area of a deleted tag is still left unspecified, so this behaviour cannot be relied on)
+            let end = at + tag_len + length;
+
+            self.backing[at + tag_len..end].fill(0);
+            self.backing.map().flush_range(at, tag_len + length).map_err(Error::Flush)?;
+            *position = end;
+
+            self.gaps.push(Gap {
+                at,
+                length: length as u32,
+                tag_len: tag_len as u8,
+            });
+        }
+        Ok(())
+    }
+
+    pub fn retain<E>(&mut self, known_ids: impl IntoIterator<Item = ControlFlow<E, Id>>) -> Result<Result<(), E>, RetainError> {
+        let mut position = Self::HEADER_LENGTH;
+        let mut iter = known_ids.into_iter();
+
+        self.gaps.clear();
+        let mut previous = None;
+        for known in iter.by_ref() {
+            let id = match known {
+                ControlFlow::Continue(id) => id,
+                ControlFlow::Break(e) => return Ok(Err(e)),
+            };
+            if let Some(p) = previous {
+                if p >= id {
+                    return Err(RetainError::UnsortedInputs(p, id));
+                }
+            }
+            previous = Some(id);
+
+            while position <= id.0.get() as usize {
+                let here = position;
+                let tag = MagicTag::read(&self.backing[..], &mut position)?;
+                let tag_len = position - here;
+
+                match tag {
+                    MagicTag::End => {
+                        return Err(RetainError::General(Error::IncorrectTag {
+                            position: here,
+                            found: tag.into(),
+                            expected_kind: "Written",
+                        }))
+                    }
+                    MagicTag::Deleted { length } => {
+                        position += length as usize;
+                        continue;
+                    }
+                    _ => {}
+                }
+
+                if id.0.get() as usize == here {
+                    match tag {
+                        MagicTag::Writing { .. } => return Err(RetainError::RetainPartial { position: here }),
+                        MagicTag::Written { length } => {
+                            position += length as usize;
+                            continue;
+                        }
+                        MagicTag::Deleted { .. } | MagicTag::End => unreachable!(),
+                    }
+                } else {
+                    match tag {
+                        MagicTag::Writing { length } | MagicTag::Written { length } => {
+                            position = here;
+                            self.erase(&mut position, tag_len, length as usize)?;
+                        }
+                        MagicTag::Deleted { .. } | MagicTag::End => unreachable!(),
+                    }
+                }
+            }
+        }
+
+        if let Some(more) = iter.next() {
+            let id = match more {
+                ControlFlow::Continue(id) => id,
+                ControlFlow::Break(e) => {
+                    return Ok(Err(e));
+                }
+            };
+            let count = 1 + iter.take_while(ControlFlow::is_continue).count();
+            return Err(RetainError::TooManyInputs { starting: id, count });
+        }
+
+        Ok(Ok(()))
     }
 
     pub fn with_bytes<R>(&self, f: impl FnOnce(&[u8]) -> R) -> R {

@@ -1,7 +1,7 @@
 use std::num::NonZeroU64;
 
 pub use backing::Backing;
-pub use error::{Error, OpenError};
+pub use error::{Error, OpenError, RetainError};
 
 pub(crate) mod backing;
 pub(crate) mod tag;

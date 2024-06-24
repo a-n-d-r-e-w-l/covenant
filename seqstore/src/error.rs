@@ -3,6 +3,8 @@ use std::fmt::{Debug, Display, Formatter};
 use bstr::BStr;
 use thiserror::Error;
 
+use crate::Id;
+
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum Error {
@@ -83,6 +85,19 @@ pub enum OpenError {
     DataAfterEnd { end: usize, first_data_at: usize, first_data: u8 },
     #[error("no end tag found")]
     NoEnd,
+}
+
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum RetainError {
+    #[error(transparent)]
+    General(#[from] Error),
+    #[error("expected inputs to be sorted: given {:?} before {:?}", .0, .1)]
+    UnsortedInputs(Id, Id),
+    #[error("{} inputs past the end of the file, starting with {:?}", .count, .starting)]
+    TooManyInputs { starting: Id, count: usize },
+    #[error("attempted to retain partially-written data at 0x{:X}", .position)]
+    RetainPartial { position: usize },
 }
 
 // This exists to prevent a `private_interfaces` warning without exposing MagicTag

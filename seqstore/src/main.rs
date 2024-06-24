@@ -46,13 +46,13 @@ fn main() -> anyhow::Result<()> {
         Operation::ManualCheck => {
             let mut map = Checker::new(make_backing()?)?;
             for item in [
-                CheckItem::Add("a", &[b'a'; 20]),
-                CheckItem::Add("b", &[b'b'; 20]),
-                CheckItem::Remove("a"),
-                CheckItem::Remove("b"),
+                CheckItem::Add("a", &[b'a'; 40]),
+                CheckItem::Add("b", &[b'b'; 40]),
                 CheckItem::Add("c", &[b'c'; 30]),
-                CheckItem::Add("d", &[b'd'; 5]),
+                CheckItem::Add("d", &[b'd'; 10]),
                 CheckItem::Add("e", &[b'e'; 5]),
+                CheckItem::Add("f", &[b'f'; 10]),
+                CheckItem::Retain(&["a", "e", "f"]),
                 // CheckItem::Print,
                 CheckItem::CheckAll,
             ] {
@@ -99,6 +99,15 @@ fn main() -> anyhow::Result<()> {
                             let name = checker.names().nth(i % l).unwrap();
                             with(&mut write_dur, || checker.execute(CheckItem::Remove(name)))?;
                         }
+                        Action::Retain(ids) => {
+                            let l = checker.names().len();
+                            if l == 0 {
+                                continue;
+                            }
+                            let ids = ids.into_iter().map(|i| i % l).collect::<Vec<_>>();
+
+                            with(&mut write_dur, || checker.execute(CheckItem::Retain(&ids)))?;
+                        }
                     }
                 }
                 with(&mut check_dur, || checker.check_all())?;
@@ -137,6 +146,7 @@ fn with<R>(d: &mut Duration, f: impl FnOnce() -> R) -> R {
 enum Action<'a> {
     Add(&'a [u8]),
     Remove(usize),
+    Retain(Vec<usize>),
 }
 
 impl<'a> Arbitrary<'a> for Action<'a> {
@@ -144,8 +154,10 @@ impl<'a> Arbitrary<'a> for Action<'a> {
         let tag = u.arbitrary::<u8>()?;
         if tag <= 100 {
             Ok(Self::Remove(u.arbitrary()?))
-        } else {
+        } else if tag <= 250 {
             Ok(Self::Add(u.arbitrary()?))
+        } else {
+            Ok(Self::Retain(u.arbitrary()?))
         }
     }
 }
@@ -155,6 +167,7 @@ impl Debug for Action<'_> {
         match self {
             Self::Add(bytes) => f.debug_tuple("Add").field(&BStr::new(bytes)).finish(),
             Self::Remove(idx) => f.debug_tuple("Remove").field(idx).finish(),
+            Self::Retain(names) => f.debug_tuple("Retain").field(names).finish(),
         }
     }
 }
