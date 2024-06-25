@@ -5,11 +5,9 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.80"
-fst = "0.4.7" # !!
-camino = "1.1.6"
+fst = "0.4.7"
 time = "0.3.34"
-binrw = "0.13.3"
+binrw = "0.14.0"
 fs-err = "2.11.0"
 memmap2 = "0.9.4"
-
-kdam = "0.5.1"
+bytes = "1.6.0"

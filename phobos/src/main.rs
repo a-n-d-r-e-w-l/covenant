@@ -1,6 +1,4 @@
-use kdam::TqdmIterator;
-use phobos::Id;
-use std::num::NonZeroU64;
+use bytes::Bytes;
 
 fn main() -> anyhow::Result<()> {
     {
@@ -11,23 +9,23 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn big_test() -> anyhow::Result<()> {
-    let mut db = phobos::Database::new("test.db".into(), "rust_DefaultHasher".to_owned())?;
+    {
+        let mut db = phobos::Database::new("test.db".into(), "hex".to_owned())?;
 
-    for i in (1..=1_000_000).tqdm() {
-        db.add(format!("{:x}", i % 16).as_bytes(), Id::new(NonZeroU64::new(i).unwrap()))?;
+        for i in 1..=10_000 {
+            db.set(Bytes::from(format!("{:x}", i)), i)?;
+        }
+        // db.merge()?;
+        db.unify_fsts()?;
     }
-    // db.merge()?;
-    db.unify_fsts()?;
-    println!();
 
-    // drop(db);
-    let mut db = phobos::Database::new("test.db".into(), "rust_DefaultHasher".to_owned())?;
-    for i in (1..=1_000_000).tqdm() {
-        let r = db.get(format!("{:x}", i % 16).as_bytes())?.expect("key should exist");
-        r.binary_search(&Id::new(NonZeroU64::new(i).unwrap()))
-            .expect("id should be associated with key");
+    {
+        let mut db = phobos::Database::new("test.db".into(), "hex".to_owned())?;
+        for i in 1..=10_000 {
+            let r = db.get(format!("{:x}", i).as_bytes()).expect("key should exist");
+            assert_eq!(i, r);
+        }
     }
-    println!();
 
     Ok(())
 }
