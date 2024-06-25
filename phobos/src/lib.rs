@@ -8,60 +8,47 @@ use std::{
     path::PathBuf,
 };
 
-use binrw::{binrw, BinRead, BinReaderExt, BinResult, BinWrite, Endian};
+use anyhow::anyhow;
 use bytes::Bytes;
 use fs_err::{File, OpenOptions};
 use fst::{map::OpBuilder, MapBuilder, Streamer};
 use memmap2::Mmap;
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, BinRead, BinWrite)]
-struct InternalId(u64);
+use varuint::{ReadVarint, WriteVarint};
 
 #[derive(Debug)]
-struct Pather {
+pub struct DatabaseOptions {
+    at: PathBuf,
     prefix: String,
-    base: PathBuf,
-    index: PathBuf,
-    index_write: PathBuf,
-    write_fst: PathBuf,
-    log: PathBuf,
-    log_backup: PathBuf,
+    unify_on_open: bool,
+    fanout: usize,
+    memory_threshold: usize,
+    create: bool,
 }
 
-impl Pather {
-    fn new(base: PathBuf, prefix: String) -> anyhow::Result<Self> {
-        Ok(Self {
-            index: base.join(format!("{prefix}.idx")),
-            index_write: base.join(format!("~{prefix}.idx")),
-            log: base.join(format!("{prefix}.log")),
-            log_backup: base.join(format!("~{prefix}.log")),
-            write_fst: base.join(format!("~{prefix}._.fst")),
-
+impl DatabaseOptions {
+    pub fn new(at: PathBuf, prefix: String) -> Self {
+        Self {
+            at,
             prefix,
-            base,
-        })
+            unify_on_open: false,
+            fanout: 6,
+            memory_threshold: 128,
+            create: true,
+        }
     }
 
-    fn fst(&self, id: u64, level: u8) -> PathBuf {
-        self.base.join(format!("{}_{id}.{level}.fst", self.prefix))
-    }
-}
-
-#[derive(Debug)]
-pub struct Database {
-    paths: Pather,
-    index_file: File,
-    log_file: File, // TODO: This might need buffering
-    count: usize,
-    fst_count: usize,
-    fsts: Vec<LevelFst>,
-    held: HashMap<Bytes, u64>,
-}
-
-impl Database {
-    pub fn new(at: PathBuf, prefix: String) -> anyhow::Result<Self> {
-        let paths = Pather::new(at, prefix.clone())?;
-        if paths.base.exists() {
+    /// # Safety
+    ///
+    /// From calling this function to closing the returned Database, the relevant files within
+    /// the provided directory **must not** be modified, whether in- or out-of-process. All relevant
+    /// files start with the provided prefix.
+    ///
+    /// Modifying any such file will likely result in a panic, but may result in incorrect results
+    /// being returned instead. The `fst` crate guarantees that modifying the underlying files will
+    /// not cause memory safety.
+    pub unsafe fn open(self) -> anyhow::Result<Database> {
+        let paths = Pather::new(self.at, self.prefix.clone())?;
+        let mut s = if paths.index.exists() {
             let mut index_file = OpenOptions::new().read(true).write(true).create(false).open(&paths.index)?;
             let index = Index::read(&mut index_file)?;
             let log_file = OpenOptions::new().read(true).write(true).create(false).open(&paths.log)?;
@@ -82,7 +69,7 @@ impl Database {
                 })
                 .collect::<Result<Vec<_>, anyhow::Error>>()?;
 
-            let mut s = Self {
+            let mut s = Database {
                 index_file,
                 log_file,
                 count: fsts.iter().map(|f| f.count as usize).sum(),
@@ -90,38 +77,94 @@ impl Database {
                 fsts,
                 held: Default::default(),
                 paths,
+                fanout: self.fanout,
+                memory_threshold: self.memory_threshold,
             };
             s.restore_log()?;
 
-            Ok(s)
+            s
         } else {
+            if !self.create {
+                return Err(anyhow!("directory does not exist"));
+            }
             fs_err::create_dir_all(&paths.base)?;
             let index_file = File::create(&paths.index)?;
             let log_file = File::create(&paths.log)?;
             let fsts = vec![];
 
-            let mut s = Self {
+            let mut s = Database {
                 index_file,
                 log_file,
                 count: 0,
                 fst_count: 0,
                 fsts,
                 held: Default::default(),
-
                 paths,
+                fanout: self.fanout,
+                memory_threshold: self.memory_threshold,
             };
 
             s.write_index()?;
 
-            Ok(s)
+            s
+        };
+
+        if self.unify_on_open {
+            s.unify_fsts()?;
         }
+
+        Ok(s)
+    }
+
+    pub fn unify(self, unify: bool) -> Self {
+        Self {
+            unify_on_open: unify,
+            ..self
+        }
+    }
+
+    pub fn create(self, create: bool) -> Self {
+        Self { create, ..self }
+    }
+
+    pub fn fanout(self, fanout: usize) -> Self {
+        Self {
+            fanout: fanout.max(2),
+            ..self
+        }
+    }
+
+    pub fn write_threshold(self, threshold: usize) -> Self {
+        Self {
+            memory_threshold: threshold.max(16),
+            ..self
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Database {
+    paths: Pather,
+    index_file: File,
+    log_file: File, // This cannot be a BufWriter, as we also need to read from it
+    count: usize,
+    fst_count: usize,
+    fsts: Vec<LevelFst>,
+    held: HashMap<Bytes, u64>,
+    fanout: usize,
+    memory_threshold: usize,
+}
+
+impl Database {
+    pub fn options(at: PathBuf, prefix: String) -> DatabaseOptions {
+        DatabaseOptions::new(at, prefix)
     }
 
     fn restore_log(&mut self) -> anyhow::Result<()> {
         let end = self.log_file.seek(SeekFrom::End(0))?;
         self.log_file.rewind()?;
 
-        fn extract(f: &mut File, end: u64) -> impl Iterator<Item = anyhow::Result<LogItem>> {
+        fn extract(f: &mut impl Read, end: u64) -> impl Iterator<Item = anyhow::Result<LogItem>> {
             let mut data = Vec::new();
             let mut e = f.read_to_end(&mut data).err().map(Into::into);
             let err = e.is_some();
@@ -131,10 +174,7 @@ impl Database {
                     return e.take().map(Err);
                 }
                 match reader.stream_position() {
-                    Ok(p) if p < end => {
-                        let item = reader.read_be::<LogItem>().map(Some).map_err(Into::into).transpose()?;
-                        Some(item)
-                    }
+                    Ok(p) if p < end => LogItem::read(&mut reader).map(Some).map_err(Into::into).transpose(),
                     Ok(_) => None,
                     Err(e) => Some(Err(e.into())),
                 }
@@ -159,7 +199,7 @@ impl Database {
         for item in items {
             match item? {
                 LogItem::Insert { key, value } => {
-                    to_add.insert(key.0, value);
+                    to_add.insert(key, value);
                 }
                 LogItem::Flushed => {}
             }
@@ -180,7 +220,6 @@ impl Database {
     fn write_index(&mut self) -> anyhow::Result<()> {
         let mut wtr = BufWriter::new(File::create(&self.paths.index_write)?);
         Index {
-            total_items: self.count as u64,
             fsts: self
                 .fsts
                 .iter()
@@ -200,24 +239,20 @@ impl Database {
         Ok(())
     }
 
-    const MEM_THRESHOLD: usize = 128;
-    const FANOUT: usize = 6;
-
     fn log(&mut self, item: LogItem) -> anyhow::Result<()> {
-        log(&mut self.log_file, item)
+        item.write(&mut self.log_file)?;
+        self.log_file.flush()?;
+        Ok(())
     }
 
     pub fn set(&mut self, key: Bytes, value: u64) -> anyhow::Result<()> {
-        self.log(LogItem::Insert {
-            key: LogBytes(key.clone()),
-            value,
-        })?;
+        self.log(LogItem::Insert { key: key.clone(), value })?;
 
         if self.held.insert(key, value).is_none() {
             self.count += 1;
         }
 
-        if self.held.len() >= Self::MEM_THRESHOLD {
+        if self.held.len() >= self.memory_threshold {
             self.merge()?;
         }
 
@@ -248,9 +283,9 @@ impl Database {
             return Ok(());
         }
         let target_level = if to_merge.is_empty() {
-            Self::calculate_level(items.len())
+            self.calculate_level(items.len())
         } else {
-            Self::calculate_level(items.len() + to_merge.iter().map(|fs| fs.count as usize).sum::<usize>())
+            self.calculate_level(items.len() + to_merge.iter().map(|fs| fs.count as usize).sum::<usize>())
         };
 
         let new_id = self.fst_count as u64;
@@ -313,7 +348,7 @@ impl Database {
             fs_err::remove_file(&self.paths.write_fst)?;
         } else {
             drop(wtr);
-            let target = self.paths.fst(new_id, Self::calculate_level(count as usize));
+            let target = self.paths.fst(new_id, self.calculate_level(count as usize));
             fs_err::rename(&self.paths.write_fst, &target)?;
             let file = File::open(&target)?;
             let mmap = unsafe { Mmap::map(&file) }?;
@@ -354,7 +389,7 @@ impl Database {
 
         let mut maximum_level = None;
         while let Some((level, count)) = levels.pop() {
-            if count < Self::FANOUT {
+            if count < self.fanout {
                 break;
             }
             maximum_level = Some(level);
@@ -374,54 +409,84 @@ impl Database {
         self.merge_fsts(|_| true)
     }
 
-    fn calculate_level(count: usize) -> u8 {
+    fn calculate_level(&self, count: usize) -> u8 {
         // count_(n+1) = count_n * Self::FANOUT, count_0 = Self::MEM_THRESHOLD
         // => count_n = Self::MEM_THRESHOLD * Self::FANOUT^(n)
         // => n = log_(Self::FANOUT)(n / Self::MEM_THRESHOLD) clamped to appropriate ranges
-        (count / Self::MEM_THRESHOLD).max(1).ilog(Self::FANOUT).clamp(0, u8::MAX as _) as u8
+        (count / self.memory_threshold).max(1).ilog(self.fanout).clamp(0, u8::MAX as _) as u8
     }
 }
 
-fn log(log_file: &mut File, item: LogItem) -> anyhow::Result<()> {
-    let mut buffer = Vec::new();
-    item.write_be(&mut Cursor::new(&mut buffer)).unwrap();
-    log_file.write_all(&buffer)?;
-    log_file.flush()?;
-    Ok(())
+#[derive(Debug)]
+struct Pather {
+    prefix: String,
+    base: PathBuf,
+    index: PathBuf,
+    index_write: PathBuf,
+    write_fst: PathBuf,
+    log: PathBuf,
+    log_backup: PathBuf,
 }
 
-#[binrw]
+impl Pather {
+    fn new(base: PathBuf, prefix: String) -> anyhow::Result<Self> {
+        Ok(Self {
+            index: base.join(format!("{prefix}.idx")),
+            index_write: base.join(format!("~{prefix}.idx")),
+            log: base.join(format!("{prefix}.log")),
+            log_backup: base.join(format!("~{prefix}.log")),
+            write_fst: base.join(format!("~{prefix}._.fst")),
+
+            prefix,
+            base,
+        })
+    }
+
+    fn fst(&self, id: u64, level: u8) -> PathBuf {
+        self.base.join(format!("{}_{id}.{level}.fst", self.prefix))
+    }
+}
+
 #[derive(Debug)]
 enum LogItem {
-    #[brw(magic = 0_u8)]
-    Insert { key: LogBytes, value: u64 },
-    #[brw(magic = 1_u8)]
+    Insert { key: Bytes, value: u64 },
     Flushed,
 }
 
-#[derive(Debug)]
-struct LogBytes(Bytes);
-
-impl BinWrite for LogBytes {
-    type Args<'b> = <[u8] as BinWrite>::Args<'b>;
-
-    fn write_options<W: Write + Seek>(&self, writer: &mut W, endian: Endian, args: Self::Args<'_>) -> BinResult<()> {
-        <u64 as BinWrite>::write_options(&self.0.len().try_into().unwrap(), writer, endian, ())?;
-        <[u8] as BinWrite>::write_options(&self.0, writer, endian, args)
+impl LogItem {
+    fn write(&self, w: &mut impl Write) -> std::io::Result<()> {
+        match self {
+            LogItem::Insert { key, value } => {
+                w.write_all(&[0])?;
+                w.write_varint(key.len() as u64)?;
+                w.write_all(key)?;
+                w.write_varint(*value)?;
+                Ok(())
+            }
+            LogItem::Flushed => {
+                w.write_all(&[1])?;
+                Ok(())
+            }
+        }
     }
-}
 
-impl BinRead for LogBytes {
-    type Args<'b> = ();
-
-    fn read_options<R: Read + Seek>(reader: &mut R, endian: Endian, _: Self::Args<'_>) -> BinResult<Self> {
-        let len = <u64 as BinRead>::read_options(reader, endian, ())?;
-        let b = <Vec<u8> as BinRead>::read_options(
-            reader,
-            endian,
-            binrw::VecArgs::builder().count(len.try_into().unwrap()).finalize(),
-        )?;
-        Ok(Self(Bytes::from(b)))
+    fn read(mut r: impl Read) -> std::io::Result<Self> {
+        let mut first = [0];
+        r.read_exact(&mut first)?;
+        match first[0] {
+            0 => {
+                let len = <_ as ReadVarint<u64>>::read_varint(&mut r)? as usize;
+                let mut buf = vec![0; len];
+                r.read_exact(&mut buf)?;
+                let value = <_ as ReadVarint<u64>>::read_varint(&mut r)?;
+                Ok(Self::Insert {
+                    key: Bytes::from(buf),
+                    value,
+                })
+            }
+            1 => Ok(Self::Flushed),
+            _ => Err(std::io::Error::from(std::io::ErrorKind::InvalidData)),
+        }
     }
 }
 
@@ -442,22 +507,52 @@ impl Debug for LevelFst {
     }
 }
 
-#[derive(Debug, BinRead, BinWrite)]
+#[derive(Debug)]
 struct IndexFst {
     id: u64,
     level: u8,
     count: u64,
 }
 
-#[binrw]
 #[derive(Debug)]
-#[brw(big, magic = b"\xFEDEIindx")]
 struct Index {
-    total_items: u64,
-
-    #[br(temp)]
-    #[bw(calc = fsts.len() as u64)]
-    len: u64,
-    #[br(count = len)]
     fsts: Vec<IndexFst>,
+}
+
+impl Index {
+    const MAGIC: &'static [u8] = b"\xFEruFSTg\xAA";
+
+    fn write(&self, w: &mut impl Write) -> std::io::Result<()> {
+        w.write_all(Self::MAGIC)?;
+
+        w.write_varint(self.fsts.len() as u64)?;
+        for &IndexFst { id, level, count } in &self.fsts {
+            w.write_varint(id)?;
+            w.write_all(&[level])?;
+            w.write_varint(count)?;
+        }
+
+        Ok(())
+    }
+
+    fn read(r: &mut impl Read) -> std::io::Result<Self> {
+        let mut buf = [0; Self::MAGIC.len()];
+        r.read_exact(&mut buf)?;
+        if buf != Self::MAGIC {
+            return Err(std::io::Error::from(std::io::ErrorKind::InvalidData));
+        }
+
+        let len = <_ as ReadVarint<u64>>::read_varint(r)? as usize;
+        let mut fsts = Vec::with_capacity(len);
+        for _ in 0..len {
+            let id = r.read_varint()?;
+            let mut buf = [0];
+            r.read_exact(&mut buf)?;
+            let level = buf[0];
+            let count = r.read_varint()?;
+            fsts.push(IndexFst { id, level, count })
+        }
+
+        Ok(Self { fsts })
+    }
 }
