@@ -1,7 +1,7 @@
 use std::{num::NonZeroU64, ops::ControlFlow};
 
 use crate::{
-    backing::Backing,
+    backing::{Backing, BackingInner},
     error::{Error, OpenError, RetainError},
     tag::MagicTag,
     Id,
@@ -12,7 +12,7 @@ pub mod checker;
 
 #[derive(Debug)]
 pub struct RawStore {
-    backing: Backing,
+    backing: BackingInner,
     end: usize,
     gaps: Vec<Gap>,
     header_length: usize,
@@ -23,7 +23,8 @@ impl RawStore {
     const HEADER_VERSION: [u8; 2] = [0x00, 0x00];
     const HEADER_LENGTH: usize = 9;
 
-    pub fn new(mut backing: Backing, spec_magic: &[u8]) -> Result<Self, Error> {
+    pub fn new(backing: Backing, spec_magic: &[u8]) -> Result<Self, Error> {
+        let mut backing = backing.0;
         let mut position = 0;
         backing.write(Self::HEADER_MAGIC, &mut position)?; // magic bytes
         backing.write(&Self::HEADER_VERSION, &mut position)?; // header version
@@ -42,6 +43,7 @@ impl RawStore {
     }
 
     pub fn open(backing: Backing, expected_spec_magic: &[u8]) -> Result<Self, OpenError> {
+        let backing = backing.0;
         let spec_var_len = <u64 as varuint::VarintSizeHint>::varint_size(expected_spec_magic.len() as _);
         let h_len = Self::HEADER_LENGTH + spec_var_len + expected_spec_magic.len();
         if backing.len() < h_len {
@@ -130,7 +132,7 @@ impl RawStore {
 
     pub fn close(self) -> Result<Backing, Error> {
         self.backing.flush()?;
-        Ok(self.backing)
+        Ok(Backing(self.backing))
     }
 
     pub fn add(&mut self, bytes: &[u8]) -> Result<Id, Error> {
@@ -473,7 +475,6 @@ pub(crate) fn debug_map(map: &RawStore) -> Result<(), Error> {
                 trace!("Written - {:?}", BStr::new(b));
             }
             MagicTag::Deleted { length } => {
-                let b = &bytes[position..position + length as usize];
                 position += length as usize;
                 trace!("Deleted length {length}");
             }
@@ -579,7 +580,7 @@ mod tests {
         let e = RawStore::open(prepare_raw!(HEADER, 1, b"A"), b"A").unwrap_err();
         assert!(matches!(e, OpenError::NoEnd), "{e:?}");
 
-        assert_eq!(HEADER, &prepare_raw!(b"\x1FPLFmap", [0, 0])[..]);
+        assert_eq!(HEADER, &prepare_raw!(b"\x1FPLFmap", [0, 0]).0[..]);
         let e = RawStore::open(prepare_raw!(RawStore::HEADER_MAGIC, [0, 0], 0), b"").unwrap_err();
         assert!(matches!(e, OpenError::NoEnd), "{e:?}");
         let false_magic = b"\x1FPLfmap";

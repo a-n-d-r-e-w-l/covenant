@@ -1,6 +1,6 @@
 #![allow(clippy::unusual_byte_groupings)] // These are deliberate to make packed fields clearer
 
-use crate::{backing::Backing, error::Error};
+use crate::{backing::BackingInner, error::Error};
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub(crate) enum MagicTag {
@@ -68,7 +68,7 @@ impl MagicTag {
         }
     }
 
-    pub(crate) fn write(self, backing: &mut Backing, position: &mut usize) -> Result<(), Error> {
+    pub(crate) fn write(self, backing: &mut BackingInner, position: &mut usize) -> Result<(), Error> {
         backing.resize_for(*position + self.written_length())?;
         self.write_buffer(backing, position);
         Ok(())
@@ -116,7 +116,7 @@ impl MagicTag {
         }
     }
 
-    pub(crate) fn write_exact(self, backing: &mut Backing, position: &mut usize, n: usize) -> Result<(), Error> {
+    pub(crate) fn write_exact(self, backing: &mut BackingInner, position: &mut usize, n: usize) -> Result<(), Error> {
         assert!(n <= 0b11 + 1, "length is too large to store item");
         let (tag, len) = match self {
             Self::Writing { length } => (Self::WRITING, length),
@@ -182,6 +182,7 @@ impl MagicTag {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backing::Backing;
 
     const LENGTHS: &[u64] = &[0, 3, 6, 7, 8, 9, 0xFF, 0x7_FF, 0x8_FF, 0b1111111111, 0b10000000000, 0x7_FF_FF_FF];
 
@@ -209,14 +210,14 @@ mod tests {
     fn max_size() {
         let max_size = 0x7_FF_FF_FF;
         assert_eq!(134217728, max_size + 1);
-        let mut backing = Backing::new_anon().unwrap();
+        let mut backing = Backing::new_anon().unwrap().0;
         MagicTag::Writing { length: max_size }.write(&mut backing, &mut 0).unwrap();
         MagicTag::Writing { length: max_size + 1 }.write(&mut backing, &mut 0).unwrap();
     }
 
     #[inline(always)]
     fn check_write_length(length: u64) {
-        let mut backing = Backing::new_anon().unwrap();
+        let mut backing = Backing::new_anon().unwrap().0;
         MagicTag::Writing { length }.write(&mut backing, &mut 0).unwrap();
         let r = MagicTag::read(&backing, &mut 0).unwrap();
         assert_eq!(r, MagicTag::Writing { length });
@@ -225,7 +226,7 @@ mod tests {
     #[inline(always)]
     fn check_write_exact(length: u64, n: usize) {
         if (MagicTag::Writing { length }).written_length() <= n {
-            let mut backing = Backing::new_anon().unwrap();
+            let mut backing = Backing::new_anon().unwrap().0;
             MagicTag::Writing { length }.write_exact(&mut backing, &mut 0, n).unwrap();
             let r = MagicTag::read(&backing, &mut 0).unwrap();
             assert_eq!(r, MagicTag::Writing { length });
@@ -235,7 +236,7 @@ mod tests {
     #[test]
     fn test_buffer_write() {
         let mut buffer = [0; 4];
-        let mut backing = Backing::new_anon().unwrap();
+        let mut backing = Backing::new_anon().unwrap().0;
         for &length in LENGTHS {
             let o = MagicTag::Writing { length };
             o.write_buffer(&mut buffer, &mut 0);
@@ -266,7 +267,7 @@ mod tests {
     #[test]
     fn test_no_further_length() {
         for &length in LENGTHS {
-            let mut backing = Backing::new_anon().unwrap();
+            let mut backing = Backing::new_anon().unwrap().0;
             let mut written = 0;
             MagicTag::Writing { length }.write(&mut backing, &mut written).unwrap();
             let mut read = 0;
@@ -278,7 +279,7 @@ mod tests {
     #[test]
     fn test_computed_length() {
         for &length in LENGTHS {
-            let mut backing = Backing::new_anon().unwrap();
+            let mut backing = Backing::new_anon().unwrap().0;
             let tag = MagicTag::Writing { length };
             let mut position = 0;
             tag.write(&mut backing, &mut position).unwrap();

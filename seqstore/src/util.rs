@@ -2,9 +2,9 @@ use std::io::Cursor;
 
 use varuint::{ReadVarint, VarintSizeHint, WriteVarint};
 
-use crate::{Backing, Error};
+use crate::{backing::BackingInner, error::Error};
 
-pub(crate) fn write_varint_backing<N: VarintSizeHint + Copy>(n: N, backing: &mut Backing, position: &mut usize) -> Result<(), Error>
+pub(crate) fn write_varint_backing<N: VarintSizeHint + Copy>(n: N, backing: &mut BackingInner, position: &mut usize) -> Result<(), Error>
 where
     for<'a> Cursor<&'a mut [u8]>: WriteVarint<N>,
 {
