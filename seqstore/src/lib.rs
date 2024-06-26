@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 use std::num::NonZeroU64;
 
 pub use backing::Backing;
@@ -29,6 +31,7 @@ pub mod raw_store;
 pub struct Id(NonZeroU64);
 
 #[cfg(feature = "serde")]
+#[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
 const _: () = {
     impl serde::Serialize for Id {
         fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -56,6 +59,7 @@ const _: () = {
 ///
 /// Requires a [`log`]-compatible logger to be setup.
 #[cfg(feature = "debug_map")]
+#[cfg_attr(docsrs, doc(cfg(feature = "debug_map")))]
 pub fn debug_map(map: &raw_store::RawStore) -> Result<(), error::Error> {
     raw_store::debug_map(map)
 }

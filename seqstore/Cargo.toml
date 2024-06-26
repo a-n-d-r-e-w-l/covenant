@@ -22,3 +22,7 @@ default = ["debug_map", "tests"] # TEMP: This is only default for now
 debug_map = ["dep:indexmap", "dep:log"]
 tests = ["debug_map", "dep:anyhow", "dep:arbitrary", "dep:rand", "dep:simplelog"]
 serde = ["dep:serde"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

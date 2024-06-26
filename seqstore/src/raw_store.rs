@@ -8,6 +8,7 @@ use crate::{
 };
 
 #[cfg(feature = "debug_map")]
+#[cfg_attr(docsrs, doc(cfg(feature = "debug_map")))]
 pub mod checker;
 
 /// A "raw" `u64`-to-bytes store, either file-backed or entirely in memory.
@@ -502,6 +503,7 @@ struct Gap {
 }
 
 #[cfg(feature = "debug_map")]
+#[cfg_attr(docsrs, doc(cfg(feature = "debug_map")))]
 pub(crate) fn debug_map(map: &RawStore) -> Result<(), Error> {
     use bstr::{BStr, ByteSlice};
     use log::trace;
