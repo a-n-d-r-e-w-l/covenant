@@ -348,11 +348,10 @@ impl RawStore {
 
     pub fn retain<E>(&mut self, known_ids: impl IntoIterator<Item = ControlFlow<E, Id>>) -> Result<Result<(), E>, RetainError> {
         let mut position = self.header_length;
-        let mut iter = known_ids.into_iter();
 
         self.gaps.clear();
         let mut previous = None;
-        for known in iter.by_ref() {
+        for known in known_ids {
             let id = match known {
                 ControlFlow::Continue(id) => id,
                 ControlFlow::Break(e) => return Ok(Err(e)),
@@ -403,17 +402,6 @@ impl RawStore {
                     }
                 }
             }
-        }
-
-        if let Some(more) = iter.next() {
-            let id = match more {
-                ControlFlow::Continue(id) => id,
-                ControlFlow::Break(e) => {
-                    return Ok(Err(e));
-                }
-            };
-            let count = 1 + iter.take_while(ControlFlow::is_continue).count();
-            return Err(RetainError::TooManyInputs { starting: id, count });
         }
 
         Ok(Ok(()))

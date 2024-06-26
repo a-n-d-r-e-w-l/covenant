@@ -104,8 +104,6 @@ pub enum RetainError {
     General(#[from] Error),
     #[error("expected inputs to be sorted: given {:?} before {:?}", .0, .1)]
     UnsortedInputs(Id, Id),
-    #[error("{} inputs past the end of the file, starting with {:?}", .count, .starting)]
-    TooManyInputs { starting: Id, count: usize },
     #[error("attempted to retain partially-written data at 0x{:X}", .position)]
     RetainPartial { position: usize },
 }
