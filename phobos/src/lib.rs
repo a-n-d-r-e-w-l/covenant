@@ -15,22 +15,25 @@ use fst::{map::OpBuilder, MapBuilder, Streamer};
 use memmap2::Mmap;
 use varuint::{ReadVarint, WriteVarint};
 
+/// Options to open a [`Database`] with.
+///
+/// See [`Database::builder`].
 #[derive(Debug)]
 pub struct DatabaseOptions {
     at: PathBuf,
     prefix: String,
-    unify_on_open: bool,
+    merge_on_open: bool,
     fanout: usize,
     memory_threshold: usize,
     create: bool,
 }
 
 impl DatabaseOptions {
-    pub fn new(at: PathBuf, prefix: String) -> Self {
+    fn new(at: PathBuf, prefix: String) -> Self {
         Self {
             at,
             prefix,
-            unify_on_open: false,
+            merge_on_open: false,
             fanout: 6,
             memory_threshold: 128,
             create: true,
@@ -109,24 +112,38 @@ impl DatabaseOptions {
             s
         };
 
-        if self.unify_on_open {
-            s.unify_fsts()?;
+        if self.merge_on_open {
+            s.merge()?;
         }
 
         Ok(s)
     }
 
-    pub fn unify(self, unify: bool) -> Self {
+    /// Whether to call [`merge`][Database::merge] on open.
+    ///
+    /// Defaults to `false`.
+    pub fn merge(self, merge: bool) -> Self {
         Self {
-            unify_on_open: unify,
+            merge_on_open: merge,
             ..self
         }
     }
 
+    /// Whether to allow creating a new database. If `false`, only allows for opening an existing database.
+    ///
+    /// Defaults to `true`.
     pub fn create(self, create: bool) -> Self {
         Self { create, ..self }
     }
 
+    /// Sets the FST fanout (how many FSTs of level `n` are required to merge into an FST of
+    /// level `n + 1`).
+    ///
+    /// Note that if some items have been updated, it is possible that `fanout` level-`n` FSTs will
+    /// merge into a single level-`n` FST containing more items. This is intentional, as levels are
+    /// calculated form the number of contained items.
+    ///
+    /// Defaults to `6`.
     pub fn fanout(self, fanout: usize) -> Self {
         Self {
             fanout: fanout.max(2),
@@ -134,6 +151,11 @@ impl DatabaseOptions {
         }
     }
 
+    /// Sets the number of items stored in memory before writing them to a level-`0` FST.
+    ///
+    /// Note that items stored in memory are still guaranteed to be restored upon a crash.
+    ///
+    /// Defaults to `128`.
     pub fn write_threshold(self, threshold: usize) -> Self {
         Self {
             memory_threshold: threshold.max(16),
@@ -142,6 +164,9 @@ impl DatabaseOptions {
     }
 }
 
+/// An [`fst`][fst::Map]-backed map that uses byte sequences as keys and [`u64`]s as values.
+///
+/// Automatically manages FSTs, merging them where appropriate, to improve average insertion time.
 #[derive(Debug)]
 pub struct Database {
     paths: Pather,
@@ -156,7 +181,8 @@ pub struct Database {
 }
 
 impl Database {
-    pub fn options(at: PathBuf, prefix: String) -> DatabaseOptions {
+    /// Create a new builder for opening a database.
+    pub fn builder(at: PathBuf, prefix: String) -> DatabaseOptions {
         DatabaseOptions::new(at, prefix)
     }
 
@@ -208,7 +234,7 @@ impl Database {
         for (key, value) in to_add {
             self.set(key, value)?;
         }
-        self.merge()?;
+        self.flush()?;
 
         self.log_file.set_len(0)?;
         self.log_file.rewind()?;
@@ -245,6 +271,17 @@ impl Database {
         Ok(())
     }
 
+    /// Stores `key`->`value`. All subsequent calls to `get(key)` before another `set(key, ..)` are
+    /// guaranteed to return `value`. This can both insert new keys into the map and update existing
+    /// ones.
+    ///
+    /// This method is guaranteed to be durable, i.e. when this method returns, it is guaranteed
+    /// that the data can be read correctly, even should the program immediately terminate.[^1]
+    ///
+    /// [^1]: Note that some storage devices maintain a caching layer of their own that we cannot
+    /// flush. Theoretically, it is possible for an immediate loss of power after this
+    /// method returns to cause written data to _not_ be persisted. I am not aware of any way to
+    /// mitigate this, but it is not a situation that will arise often.
     pub fn set(&mut self, key: Bytes, value: u64) -> anyhow::Result<()> {
         self.log(LogItem::Insert { key: key.clone(), value })?;
 
@@ -253,12 +290,14 @@ impl Database {
         }
 
         if self.held.len() >= self.memory_threshold {
-            self.merge()?;
+            self.flush()?;
         }
 
         Ok(())
     }
 
+    /// Retrieves the value associated with `key` from the map. This method will always return the
+    /// latest value set for `key`.
     pub fn get(&mut self, key: &[u8]) -> Option<u64> {
         if let Some(id) = self.held.get(key) {
             return Some(*id);
@@ -329,23 +368,10 @@ impl Database {
         wtr.flush()?;
         drop(stream);
 
-        let to_remove = to_merge.iter().map(|f| (f.id, f.level)).collect::<Vec<_>>();
-
-        for (merged_id, merged_level) in to_remove {
-            let origin = self.paths.fst(merged_id, merged_level);
-            if origin.exists() {
-                fs_err::remove_file(&origin)?;
-            } else {
-                println!("cannot remove {}", origin.display()); // TODO: Proper logging
-            }
-        }
-
-        let merged = to_merge.iter().map(|r| r.id).collect::<HashSet<_>>();
-        self.fsts.retain(|it| !merged.contains(&it.id));
-
-        if count == 0 {
+        let new = if count == 0 {
             drop(wtr);
             fs_err::remove_file(&self.paths.write_fst)?;
+            None
         } else {
             drop(wtr);
             let target = self.paths.fst(new_id, self.calculate_level(count as usize));
@@ -359,18 +385,38 @@ impl Database {
                 fst: fst::Map::new(mmap)?,
             };
 
+            Some(new)
+        };
+
+        let merged = to_merge.iter().map(|r| r.id).collect::<HashSet<_>>();
+        let to_remove = to_merge.iter().map(|f| (f.id, f.level)).collect::<Vec<_>>();
+
+        if let Some(new) = new {
             self.fsts.push(new);
         }
+        self.fsts.retain(|it| !merged.contains(&it.id));
         self.write_index()?;
 
+        for (merged_id, merged_level) in to_remove {
+            let origin = self.paths.fst(merged_id, merged_level);
+            if origin.exists() {
+                fs_err::remove_file(&origin)?;
+            } else {
+                println!("cannot remove {}", origin.display()); // TODO: Proper logging
+            }
+        }
+
         self.log(LogItem::Flushed)?;
-        self.log_file.set_len(0)?;
         self.log_file.rewind()?;
+        self.log_file.set_len(0)?;
 
         Ok(())
     }
 
-    pub fn merge(&mut self) -> anyhow::Result<()> {
+    /// Flushes all in-memory data to the filesystem, potentially merging some existing FSTs.
+    ///
+    /// To merge _all_ FSTs, use [`merge`][`Self::merge`].
+    pub fn flush(&mut self) -> anyhow::Result<()> {
         if self.held.is_empty() {
             return Ok(());
         }
@@ -404,7 +450,8 @@ impl Database {
         Ok(())
     }
 
-    pub fn unify_fsts(&mut self) -> anyhow::Result<()> {
+    /// Merges all in-memory and on-disk data into a single FST.
+    pub fn merge(&mut self) -> anyhow::Result<()> {
         self.fst_count = 0;
         self.merge_fsts(|_| true)
     }
