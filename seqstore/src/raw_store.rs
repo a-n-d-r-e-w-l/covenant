@@ -236,10 +236,10 @@ impl RawStore {
             MagicTag::End.write(&mut self.backing, &mut position)?;
         }
         let end = position;
-        self.backing.flush_range(start, end)?;
+        self.backing.flush_start_end(start, end)?;
 
         self.backing[start] ^= MagicTag::WRITING ^ MagicTag::WRITTEN;
-        self.backing.map().flush_range(start, 1).map_err(Error::Flush)?;
+        self.backing.flush_range(start, 1)?;
 
         Ok(Id::new(start, bytes.len()))
     }
@@ -263,7 +263,7 @@ impl RawStore {
                 } else {
                     let r = f(&self.backing[position..position + with.len()]);
                     self.backing[position..position + with.len()].copy_from_slice(with);
-                    self.backing.map().flush_range(position, with.len()).map_err(Error::Flush)?;
+                    self.backing.flush_range(position, with.len())?;
                     Ok(r)
                 }
             }
@@ -375,7 +375,7 @@ impl RawStore {
             assert_eq!(*position + len, end);
 
             self.backing[*position..end].fill(0);
-            self.backing.flush_range(start, end)?;
+            self.backing.flush_start_end(start, end)?;
             *position = end;
 
             self.gaps.push(Gap {
@@ -392,7 +392,7 @@ impl RawStore {
             let end = at + tag_len + length;
 
             self.backing[at + tag_len..end].fill(0);
-            self.backing.map().flush_range(at, tag_len + length).map_err(Error::Flush)?;
+            self.backing.flush_range(at, tag_len + length)?;
             *position = end;
 
             self.gaps.push(Gap {

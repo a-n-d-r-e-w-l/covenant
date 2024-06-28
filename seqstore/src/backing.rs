@@ -130,7 +130,7 @@ impl BackingInner {
         Ok(())
     }
 
-    pub(crate) fn map(&self) -> &memmap2::MmapMut {
+    fn map(&self) -> &memmap2::MmapMut {
         match self {
             BackingInner::File { map, .. } => map,
             BackingInner::Anon(map) => map,
@@ -142,12 +142,16 @@ impl BackingInner {
         Ok(())
     }
 
-    pub(crate) fn flush_range(&self, start: usize, end: usize) -> Result<(), Error> {
+    pub(crate) fn flush_start_end(&self, start: usize, end: usize) -> Result<(), Error> {
         assert!(start <= end);
         if start == end {
             return Ok(());
         }
         self.map().flush_range(start, end - start).map_err(Error::Flush)?;
         Ok(())
+    }
+
+    pub(crate) fn flush_range(&self, start: usize, length: usize) -> Result<(), Error> {
+        self.map().flush_range(start, length).map_err(Error::Flush)
     }
 }
