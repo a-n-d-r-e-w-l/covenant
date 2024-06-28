@@ -1,4 +1,4 @@
-use std::{num::NonZeroU64, ops::ControlFlow};
+use std::ops::ControlFlow;
 
 use crate::{
     backing::{Backing, BackingInner},
@@ -241,7 +241,7 @@ impl RawStore {
         self.backing[start] ^= MagicTag::WRITING ^ MagicTag::WRITTEN;
         self.backing.map().flush_range(start, 1).map_err(Error::Flush)?;
 
-        Ok(Id(NonZeroU64::new(start as u64).expect("cannot write to 0")))
+        Ok(Id::new(start, bytes.len()))
     }
 
     /// Replaces the data stored at `at` with `with`, as long as the **new data has the same
@@ -249,14 +249,14 @@ impl RawStore {
     ///
     /// `f` is given a view of the old data.
     pub fn replace<R>(&mut self, at: Id, with: &[u8], f: impl FnOnce(&[u8]) -> R) -> Result<R, Error> {
-        let at = at.0.get() as usize;
-        let mut position = at;
+        let mut position = at.at();
         let tag = MagicTag::read(&self.backing, &mut position)?;
         match tag {
             MagicTag::Written { length } => {
+                at.verify(length)?;
                 if length as usize != with.len() {
                     Err(Error::MismatchedLengths {
-                        position: at,
+                        position: at.at(),
                         new: with.len(),
                         old: length as usize,
                     })
@@ -267,10 +267,10 @@ impl RawStore {
                     Ok(r)
                 }
             }
-            MagicTag::Writing { .. } => Err(Error::EntryCorrupt { position: at }),
-            MagicTag::Deleted { .. } => Err(Error::CannotReplaceDeleted { position: at }),
+            MagicTag::Writing { .. } => Err(Error::EntryCorrupt { position: at.at() }),
+            MagicTag::Deleted { .. } => Err(Error::CannotReplaceDeleted { position: at.at() }),
             other => Err(Error::IncorrectTag {
-                position: at,
+                position: at.at(),
                 found: other.into(),
                 expected_kind: "Written",
             }),
@@ -288,18 +288,17 @@ impl RawStore {
     /// result in a `panic!` or reception of `SIGBUS` (_i.e._ no UB), though returning
     /// bogus data is possible.
     pub fn get<R>(&self, at: Id, f: impl FnOnce(&[u8]) -> R) -> Result<R, Error> {
-        let at = at.0.get() as usize;
-        // TODO: Keys should include some marker to check the length to prevent overreads
-        let mut position = at;
+        let mut position = at.at();
         let tag = MagicTag::read(&self.backing, &mut position)?;
         match tag {
-            MagicTag::Writing { .. } => Err(Error::EntryCorrupt { position: at }),
+            MagicTag::Writing { .. } => Err(Error::EntryCorrupt { position: at.at() }),
             MagicTag::Written { length } => {
+                at.verify(length)?;
                 let b = &self.backing[position..position + length as usize];
                 Ok(f(b))
             }
             other => Err(Error::IncorrectTag {
-                position: at,
+                position: at.at(),
                 found: other.into(),
                 expected_kind: "Written",
             }),
@@ -309,22 +308,22 @@ impl RawStore {
     /// Attempts to remove the data at `at`. This will return an error for partially-written data
     /// as well as already-deleted data.
     pub fn remove<R>(&mut self, at: Id, f: impl FnOnce(&[u8]) -> R) -> Result<R, Error> {
-        let at = at.0.get() as usize;
-        let mut position = at;
+        let mut position = at.at();
         let tag = MagicTag::read(&self.backing, &mut position)?;
         match tag {
             MagicTag::End => {
                 panic!("cannot remove end tag")
             }
-            MagicTag::Writing { .. } => Err(Error::EntryCorrupt { position: at }),
+            MagicTag::Writing { .. } => Err(Error::EntryCorrupt { position: at.at() }),
             MagicTag::Written { length } => {
+                at.verify(length)?;
                 let ret = f(&self.backing[position..position + length as usize]);
 
-                self.erase(&mut { at }, position - at, length as usize)?;
+                self.erase(&mut { at.at() }, position - at.at(), length as usize)?;
 
                 Ok(ret)
             }
-            MagicTag::Deleted { .. } => Err(Error::AlreadyDeleted { position: at }),
+            MagicTag::Deleted { .. } => Err(Error::AlreadyDeleted { position: at.at() }),
         }
     }
 
@@ -427,20 +426,20 @@ impl RawStore {
         let mut position = self.header_length;
 
         self.gaps.clear();
-        let mut previous = None;
+        let mut previous: Option<Id> = None;
         for known in known_ids {
             let id = match known {
                 ControlFlow::Continue(id) => id,
                 ControlFlow::Break(e) => return Ok(Err(e)),
             };
             if let Some(p) = previous {
-                if p >= id {
+                if p.at() >= id.at() {
                     return Err(RetainError::UnsortedInputs(p, id));
                 }
             }
             previous = Some(id);
 
-            while position <= id.0.get() as usize {
+            while position <= id.at() {
                 let here = position;
                 let tag = MagicTag::read(&self.backing[..], &mut position)?;
                 let tag_len = position - here;
@@ -460,10 +459,11 @@ impl RawStore {
                     _ => {}
                 }
 
-                if id.0.get() as usize == here {
+                if id.at() == here {
                     match tag {
                         MagicTag::Writing { .. } => return Err(RetainError::RetainPartial { position: here }),
                         MagicTag::Written { length } => {
+                            id.verify(length)?;
                             position += length as usize;
                             continue;
                         }

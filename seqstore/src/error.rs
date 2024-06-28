@@ -36,6 +36,10 @@ pub enum Error {
         found: Tag,
         expected_kind: &'static str,
     },
+    /// An [`Id`] did not match the data stored at its location. This normally means that the Id was
+    /// constructed through invalid means (_i.e._ it did not originate from this map), or that its
+    /// data was erased and replaced with another call to [`add(..)`][crate::raw_store::RawStore::add]
+    IdCheck(Id),
     /// Encountered partially-written data.
     /// This should only be possible if the previous write operation at this location was interrupted
     /// by program termination.
@@ -77,6 +81,9 @@ impl Display for Error {
                 expected_kind,
             } => {
                 write!(f, "expected {expected_kind} tag at 0x{position:X}, found {found:?}")
+            }
+            Self::IdCheck(id) => {
+                write!(f, "{id:?} did not pass verification for referenced data")
             }
             Self::EntryCorrupt { position } => write!(f, "previous write at 0x{position:X} was interrupted, this entry is corrupt"),
             Self::AlreadyDeleted { position } => write!(f, "attempted to delete already deleted item at 0x{position:X}"),

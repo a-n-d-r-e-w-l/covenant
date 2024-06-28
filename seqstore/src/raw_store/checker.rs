@@ -9,7 +9,7 @@ use indexmap::IndexMap;
 use log::trace;
 use thiserror::Error;
 
-use crate::{backing::Backing, raw_store::RawStore, Id};
+use crate::{backing::Backing, id::PackedId, raw_store::RawStore, Id};
 
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub enum CheckItem<'a, N> {
@@ -38,7 +38,7 @@ impl<N: Debug> Debug for CheckItem<'_, N> {
 
 #[derive(Debug)]
 pub struct Checker<N> {
-    check: IndexMap<Id, Vec<u8>>,
+    check: IndexMap<PackedId, Vec<u8>>,
     names: IndexMap<N, Id>,
     map: RawStore,
 }
@@ -57,14 +57,14 @@ impl<N: Hash + Eq + Debug + Copy> Checker<N> {
             CheckItem::Add(name, bytes) => {
                 let at = self.map.add(bytes)?;
                 assert!(self.names.insert(name, at).is_none());
-                assert!(self.check.insert(at, bytes.to_vec()).is_none());
+                assert!(self.check.insert(at.pack(), bytes.to_vec()).is_none());
                 // debug!("{name:?} stored at {at}");
                 Ok(())
             }
             CheckItem::Remove(name) => {
                 // debug!("removing {name:?}");
                 let at = self.names.swap_remove(&name).expect("removing name that was never inserted");
-                let check = self.check.swap_remove(&at).expect("removing location that was never added");
+                let check = self.check.swap_remove(&at.pack()).expect("removing location that was never added");
                 let stored = self.map.remove(at, ToOwned::to_owned)?;
                 if check != stored {
                     Err(CheckerError::Mismatch {
@@ -77,7 +77,7 @@ impl<N: Hash + Eq + Debug + Copy> Checker<N> {
             }
             CheckItem::Check(name) => {
                 let at = *self.names.get(&name).expect("checking name that was never inserted");
-                let check = self.check.get(&at).expect("checking location that was never added");
+                let check = self.check.get(&at.pack()).expect("checking location that was never added");
                 let stored = self.map.get(at, ToOwned::to_owned)?;
                 if *check != stored {
                     Err(CheckerError::Mismatch {
@@ -96,14 +96,14 @@ impl<N: Hash + Eq + Debug + Copy> Checker<N> {
             }
             CheckItem::Retain(names) => {
                 let mut ids = names.iter().filter_map(|name| self.names.get(name).copied()).collect::<Vec<_>>();
-                ids.sort();
+                ids.sort_by(Id::file_sort);
                 ids.dedup();
                 let r = ids.iter().copied().map(std::ops::ControlFlow::Continue::<std::convert::Infallible, _>);
                 self.map.retain(r).map_err(CheckerError::Retain)?.unwrap();
 
-                let ids = ids.into_iter().collect::<HashSet<_>>();
+                let ids = ids.into_iter().map(Id::pack).collect::<HashSet<_>>();
 
-                self.names.retain(|_, id| ids.contains(id));
+                self.names.retain(|_, id| ids.contains(&id.pack()));
                 self.check.retain(|id, _| ids.contains(id));
 
                 Ok(())
@@ -135,7 +135,7 @@ impl<N: Hash + Eq + Debug + Copy> Checker<N> {
     }
 
     pub fn keys(&self) -> impl ExactSizeIterator<Item = Id> + '_ {
-        self.check.keys().copied()
+        self.check.keys().copied().map(Id::from_packed)
     }
 }
 
