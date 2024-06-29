@@ -87,20 +87,13 @@ impl PackedId {
             // not a huge loss
             panic!("too big");
         }
-        let mut b = at.to_be_bytes();
-        b[0] = marker;
-        b.rotate_left(1);
-        Self(NonZeroU64::new(u64::from_be_bytes(b)).expect("at least one bit is set"))
+        Self(NonZeroU64::new(((at as u64) << 8) | (marker as u64)).expect("at least one bit is set"))
     }
 
     fn unpack(self) -> (usize, u8) {
         let s = self.0.get() as usize;
-        let mut b = s.to_be_bytes();
-        b.rotate_right(1);
-        let marker = b[0];
-        b[0] = 0;
-        let t = u64::from_be_bytes(b);
-        (t as usize, marker)
+        let marker = (s & 0xFF) as u8;
+        (s >> 8, marker)
     }
 }
 
