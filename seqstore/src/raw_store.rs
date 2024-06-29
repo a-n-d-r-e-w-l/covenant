@@ -162,7 +162,7 @@ impl RawStore {
     /// to modify the underlying file until it drops. For more information about file safety, see
     /// [`Backing::new_file`]. This does not apply if the [`Backing`] was created using an anonymous map,
     /// as there is no underlying file to modify.
-    pub fn close(self) -> Result<Backing, Error> {
+    pub fn close(mut self) -> Result<Backing, Error> {
         self.backing.flush()?;
         Ok(Backing(self.backing))
     }
@@ -502,14 +502,17 @@ struct Gap {
     tag_len: u8,
 }
 
+/// A function that can describe the contents of a [`RawStore`][raw_store::RawStore], intended for
+/// debugging when working on this crate itself.
+///
+/// Requires a [`log`]-compatible logger to be setup.
 #[cfg(feature = "debug_map")]
 #[cfg_attr(docsrs, doc(cfg(feature = "debug_map")))]
-pub(crate) fn debug_map(map: &RawStore) -> Result<(), Error> {
+pub fn debug_map(bytes: &[u8]) -> Result<(), Error> {
     use bstr::{BStr, ByteSlice};
     use log::trace;
 
     trace!(" === BEGIN CHECK === ");
-    let bytes = &map.backing[..];
 
     let header = &bytes[..RawStore::HEADER_LENGTH];
     assert_eq!(&header[..RawStore::HEADER_MAGIC.len()], RawStore::HEADER_MAGIC);

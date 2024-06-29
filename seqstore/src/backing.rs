@@ -137,12 +137,12 @@ impl BackingInner {
         }
     }
 
-    pub(crate) fn flush(&self) -> Result<(), Error> {
+    pub(crate) fn flush(&mut self) -> Result<(), Error> {
         self.map().flush().map_err(Error::Flush)?;
         Ok(())
     }
 
-    pub(crate) fn flush_start_end(&self, start: usize, end: usize) -> Result<(), Error> {
+    pub(crate) fn flush_start_end(&mut self, start: usize, end: usize) -> Result<(), Error> {
         assert!(start <= end);
         if start == end {
             return Ok(());
@@ -151,7 +151,7 @@ impl BackingInner {
         Ok(())
     }
 
-    pub(crate) fn flush_range(&self, start: usize, length: usize) -> Result<(), Error> {
+    pub(crate) fn flush_range(&mut self, start: usize, length: usize) -> Result<(), Error> {
         self.map().flush_range(start, length).map_err(Error::Flush)
     }
 }

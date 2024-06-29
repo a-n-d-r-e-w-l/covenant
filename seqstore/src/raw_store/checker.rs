@@ -52,14 +52,14 @@ impl<N: Hash + Eq + Debug + Copy> Checker<N> {
         })
     }
 
-    pub fn execute(&mut self, item: CheckItem<N>) -> Result<(), CheckerError> {
+    pub fn execute(&mut self, item: CheckItem<N>) -> Result<Option<Id>, CheckerError> {
         match item {
             CheckItem::Add(name, bytes) => {
                 let at = self.map.add(bytes)?;
                 assert!(self.names.insert(name, at).is_none());
                 assert!(self.check.insert(at.pack(), bytes.to_vec()).is_none());
                 // debug!("{name:?} stored at {at}");
-                Ok(())
+                Ok(Some(at))
             }
             CheckItem::Remove(name) => {
                 // debug!("removing {name:?}");
@@ -72,7 +72,7 @@ impl<N: Hash + Eq + Debug + Copy> Checker<N> {
                         found: BString::new(stored),
                     })
                 } else {
-                    Ok(())
+                    Ok(Some(at))
                 }
             }
             CheckItem::Check(name) => {
@@ -85,14 +85,20 @@ impl<N: Hash + Eq + Debug + Copy> Checker<N> {
                         found: BString::new(stored),
                     })
                 } else {
-                    Ok(())
+                    Ok(None)
                 }
             }
-            CheckItem::CheckAll => self.check_all(),
-            CheckItem::Debug => crate::debug_map(&self.map).map_err(Into::into),
+            CheckItem::CheckAll => {
+                self.check_all()?;
+                Ok(None)
+            }
+            CheckItem::Debug => {
+                crate::raw_store::debug_map(&self.map.backing)?;
+                Ok(None)
+            }
             CheckItem::Print => {
                 self.map.with_bytes(|b| trace!("{:?}", BStr::new(b.trim_end_with(|b| b == '\0'))));
-                Ok(())
+                Ok(None)
             }
             CheckItem::Retain(names) => {
                 let mut ids = names.iter().filter_map(|name| self.names.get(name).copied()).collect::<Vec<_>>();
@@ -106,7 +112,7 @@ impl<N: Hash + Eq + Debug + Copy> Checker<N> {
                 self.names.retain(|_, id| ids.contains(&id.pack()));
                 self.check.retain(|id, _| ids.contains(id));
 
-                Ok(())
+                Ok(None)
             }
         }
     }
