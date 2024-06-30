@@ -2,7 +2,7 @@ use std::ops::ControlFlow;
 
 use crate::{
     backing::{Backing, BackingInner},
-    error::{Error, OpenError, RetainError},
+    error::{Error, RetainError},
     tag::MagicTag,
     Id,
 };
@@ -11,13 +11,17 @@ use crate::{
 #[cfg_attr(docsrs, doc(cfg(feature = "debug_map")))]
 pub mod checker;
 
-/// A "raw" `u64`-to-bytes store, either file-backed or entirely in memory.
+mod open;
+pub use open::{OpenStoreOptions, RecoveryStrategy};
+
+/// A "raw" [`Id`]-to-bytes store, either file-backed or entirely in memory, where [`Id`] is
+/// represented by an opaque (_i.e._ not corresponding to file offset) [`u64`].
 ///
 /// This is "raw" in the sense that it makes no assumptions about what data is being stored, nor about
 /// how that data will be retrieved. This makes it ideal to use to build other, more specialized
 /// maps on top of, and less ergonomic to use directly.
 ///
-/// If using [file-backed storage][Backing::new_file], a minimal amount of data is stored in memory,
+/// If using [file-backed storage][Backing::new_file], only a minimal amount of data is stored in memory,
 /// and may potentially be reduced further in the future. No items are stored in memory.
 // The path to reduction is by moving `Self.gaps` into another file-backed buffer, though given that
 // Gap is fairly small (< 2*usize) this shouldn't be an issue for maps where either deletion is rare
@@ -34,125 +38,6 @@ impl RawStore {
     const HEADER_MAGIC: &'static [u8] = b"\x1FPLFmap";
     const HEADER_VERSION: [u8; 2] = [0x00, 0x00];
     const HEADER_LENGTH: usize = 9;
-
-    // TODO: Unify `new` and `open` under OpenOptions, and properly document then (including a link
-    //       back to Backing's safety requirements.
-    /// # Header specialization
-    ///
-    /// As mentioned in the [type-level docs][Self], this map itself is "raw". To allow for other,
-    /// more specialized maps built on top of this to detect if the wrong _kind_ of specialized
-    /// map has written the file, you can specify "specialization magic bytes" that get included in
-    /// the file header, and must match to be able to load it.
-    pub fn new(backing: Backing, spec_magic: &[u8]) -> Result<Self, Error> {
-        let mut backing = backing.0;
-        let mut position = 0;
-        backing.write(Self::HEADER_MAGIC, &mut position)?; // magic bytes
-        backing.write(&Self::HEADER_VERSION, &mut position)?; // header version
-        debug_assert_eq!(position, Self::HEADER_LENGTH);
-        crate::util::write_varint_backing(spec_magic.len() as u64, &mut backing, &mut position)?;
-        backing.write(spec_magic, &mut position)?;
-        let header_length = position;
-        MagicTag::End.write(&mut backing, &mut position)?;
-        backing.flush()?;
-        Ok(Self {
-            backing,
-            end: header_length,
-            gaps: vec![],
-            header_length,
-        })
-    }
-
-    /// # Header specialization
-    ///
-    /// Currently, the specialization magic bytes must match _exactly_ to be considered correct.
-    /// This may be relaxed in the future to a `Fn(&[u8]) -> bool` or similar.
-    pub fn open(backing: Backing, expected_spec_magic: &[u8]) -> Result<Self, OpenError> {
-        let backing = backing.0;
-        let spec_var_len = <u64 as varuint::VarintSizeHint>::varint_size(expected_spec_magic.len() as _);
-        let h_len = Self::HEADER_LENGTH + spec_var_len + expected_spec_magic.len();
-        if backing.len() < h_len {
-            return Err(OpenError::TooSmall {
-                found: backing.len(),
-                expected: h_len,
-            });
-        }
-        let header = &backing[..h_len];
-        if &header[..Self::HEADER_MAGIC.len()] != Self::HEADER_MAGIC {
-            return Err(OpenError::Magic);
-        }
-        let mut hpos = Self::HEADER_MAGIC.len();
-        let v: [u8; 2] = (&header[hpos..hpos + Self::HEADER_VERSION.len()]).try_into().unwrap();
-        if v[..] != Self::HEADER_VERSION {
-            return Err(OpenError::UnknownVersion(v));
-        }
-        hpos += Self::HEADER_VERSION.len();
-
-        let s = crate::util::read_varint::<u64>(&backing, &mut hpos)?;
-        if s as usize != expected_spec_magic.len() {
-            return Err(OpenError::SpecMagicLen {
-                found: s as usize,
-                expected: expected_spec_magic.len(),
-            });
-        }
-        if &backing[hpos..hpos + s as usize] != expected_spec_magic {
-            return Err(OpenError::SpecMagic {
-                found: bstr::BString::new(backing[hpos..hpos + s as usize].to_owned()),
-                expected: bstr::BString::new(expected_spec_magic.to_owned()),
-            });
-        }
-        hpos += s as usize;
-
-        // This should not be possible to hit, but is kept to ensure that the reading checks
-        // are kept in line with changes to the header size
-        assert_eq!(hpos, header.len());
-
-        let mut pos = hpos;
-        let mut end = None;
-        let mut gaps = Vec::new();
-        while pos < backing.len() {
-            let here = pos;
-            let tag = MagicTag::read(&backing, &mut pos)?;
-            match tag {
-                MagicTag::End => {
-                    end = Some(here);
-                    let rest = &backing[pos..];
-                    if let Some((idx, b)) = rest.iter().copied().enumerate().find(|(_, b)| *b != 0) {
-                        return Err(OpenError::DataAfterEnd {
-                            end: here,
-                            first_data_at: pos + idx,
-                            first_data: b,
-                        });
-                    }
-                    break;
-                }
-                MagicTag::Writing { length } => {
-                    return Err(OpenError::PartialWrite {
-                        position: here,
-                        length: length as usize,
-                    });
-                }
-                MagicTag::Written { length } => {
-                    pos += length as usize;
-                }
-                MagicTag::Deleted { length } => {
-                    gaps.push(Gap {
-                        at: here,
-                        length: length as u32,
-                        tag_len: (pos - here) as u8,
-                    });
-                    pos += length as usize;
-                }
-            }
-        }
-        let Some(end) = end else { return Err(OpenError::NoEnd) };
-
-        Ok(Self {
-            backing,
-            end,
-            gaps,
-            header_length: h_len,
-        })
-    }
 
     /// Flush all outstanding changes and close the store.
     ///
@@ -502,8 +387,8 @@ struct Gap {
     tag_len: u8,
 }
 
-/// A function that can describe the contents of a [`RawStore`][raw_store::RawStore], intended for
-/// debugging when working on this crate itself.
+/// A function that can describe the contents of a [`RawStore`], intended for debugging when working
+/// on this crate itself.
 ///
 /// Requires a [`log`]-compatible logger to be setup.
 #[cfg(feature = "debug_map")]
@@ -558,128 +443,4 @@ pub fn debug_map(bytes: &[u8]) -> Result<(), Error> {
     assert!(ended);
     trace!(" === END CHECK === \n");
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    trait Byteable {
-        fn write_len(&self) -> usize;
-
-        fn write(&self, bytes: &mut [u8], position: &mut usize);
-    }
-
-    impl Byteable for [u8] {
-        fn write_len(&self) -> usize {
-            self.len()
-        }
-
-        fn write(&self, bytes: &mut [u8], position: &mut usize) {
-            bytes[*position..*position + self.len()].copy_from_slice(self);
-            *position += self.len();
-        }
-    }
-
-    impl Byteable for u8 {
-        fn write_len(&self) -> usize {
-            1
-        }
-
-        fn write(&self, bytes: &mut [u8], position: &mut usize) {
-            bytes[*position] = *self;
-            *position += 1;
-        }
-    }
-
-    impl<const N: usize> Byteable for [u8; N] {
-        fn write_len(&self) -> usize {
-            N
-        }
-
-        fn write(&self, bytes: &mut [u8], position: &mut usize) {
-            bytes[*position..*position + N].copy_from_slice(self);
-            *position += N;
-        }
-    }
-
-    impl<T: Byteable + ?Sized> Byteable for &T {
-        fn write_len(&self) -> usize {
-            <T as Byteable>::write_len(self)
-        }
-
-        fn write(&self, bytes: &mut [u8], position: &mut usize) {
-            <T as Byteable>::write(self, bytes, position)
-        }
-    }
-
-    impl Byteable for MagicTag {
-        fn write_len(&self) -> usize {
-            self.written_length()
-        }
-
-        fn write(&self, bytes: &mut [u8], position: &mut usize) {
-            self.write_buffer(bytes, position);
-        }
-    }
-
-    macro_rules! prepare_raw {
-        ($($e:expr),* $(,)?) => {{
-            let l = 0 $(+ Byteable::write_len(&$e))*;
-            let mut bytes = vec![0_u8; l];
-            let mut pos = 0;
-            $(
-            Byteable::write(&$e, &mut bytes, &mut pos);
-            )*
-            Backing::new_from_buffer(&bytes).unwrap()
-        }};
-    }
-
-    macro_rules! prepare {
-        ($($e:expr),* $(,)?) => {prepare_raw!(HEADER, 0, $($e,)* MagicTag::End)};
-    }
-
-    const HEADER: &[u8] = b"\x1FPLFmap\x00\x00";
-
-    #[test]
-    fn test_header() {
-        let empty = [0; RawStore::HEADER_LENGTH];
-        for l in 0..=RawStore::HEADER_LENGTH {
-            let backing = Backing::new_from_buffer(&empty[..l]).unwrap();
-            let e = RawStore::open(backing, b"").unwrap_err();
-            assert!(matches!(e, OpenError::TooSmall {found, ..} if found == l));
-        }
-
-        let e = RawStore::open(prepare_raw!(HEADER, 0), b"").unwrap_err();
-        assert!(matches!(e, OpenError::NoEnd), "{e:?}");
-        let e = RawStore::open(prepare_raw!(HEADER, 1, b"A"), b"A").unwrap_err();
-        assert!(matches!(e, OpenError::NoEnd), "{e:?}");
-
-        assert_eq!(HEADER, &prepare_raw!(b"\x1FPLFmap", [0, 0]).0[..]);
-        let e = RawStore::open(prepare_raw!(RawStore::HEADER_MAGIC, [0, 0], 0), b"").unwrap_err();
-        assert!(matches!(e, OpenError::NoEnd), "{e:?}");
-        let false_magic = b"\x1FPLfmap";
-        let e = RawStore::open(prepare_raw!(false_magic, [0, 0], 0), b"").unwrap_err();
-        assert!(matches!(e, OpenError::Magic), "{e:?}");
-        let e = RawStore::open(prepare_raw!(RawStore::HEADER_MAGIC, [1, 0], 0), b"").unwrap_err();
-        assert!(matches!(e, OpenError::UnknownVersion([1, 0])), "{e:?}");
-
-        RawStore::open(prepare!(), b"").unwrap();
-    }
-
-    #[test]
-    fn partial_write() {
-        // TODO: Add OpenOptions equivalent to configure attempting repairs
-        let e = RawStore::open(prepare!(MagicTag::Writing { length: 10 }, [b'a'; 10]), b"").unwrap_err();
-        assert!(
-            matches!(
-                e,
-                OpenError::PartialWrite {
-                    position: l,
-                    length: 10
-                } if l == RawStore::HEADER_LENGTH + 1
-            ),
-            "{e:?}"
-        );
-    }
 }

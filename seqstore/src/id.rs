@@ -10,7 +10,7 @@ use crate::error::Error;
 ///
 #[cfg_attr(
     feature = "serde",
-    doc = "Additionally, while `Id` implements [`Serialize`][serde::Serialize] and\
+    doc = "It is worth noting that, while `Id` implements [`Serialize`][serde::Serialize] and\
     [`Deserialize`][serde::Deserialize], the serialized representation is intended to be opaque - \
     attempting to construct an `Id` from scratch via [`Deserialize`][serde::Deserialize] should not be done."
 )]
@@ -51,6 +51,7 @@ impl Id {
         lz | (first << 2) | (last << 4) | (reduce) << 6
     }
 
+    // TEMP: Only required due to restrictions on `retain`
     pub fn file_sort(a: &Self, b: &Self) -> Ordering {
         let o = a.at.cmp(&b.at);
         if matches!(o, Ordering::Equal) {
@@ -79,6 +80,14 @@ impl Debug for Id {
 pub struct PackedId(NonZeroU64);
 
 impl PackedId {
+    pub fn new(n: u64) -> Option<Self> {
+        NonZeroU64::new(n).map(Self)
+    }
+
+    pub fn get(self) -> u64 {
+        self.0.get()
+    }
+
     fn from_parts(at: usize, marker: u8) -> Self {
         if at.leading_zeros() < 8 {
             // No data can be packed into this Id, and there is no way to distinguish it from

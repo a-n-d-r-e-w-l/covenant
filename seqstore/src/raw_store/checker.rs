@@ -48,7 +48,7 @@ impl<N: Hash + Eq + Debug + Copy> Checker<N> {
         Ok(Self {
             check: IndexMap::new(),
             names: IndexMap::new(),
-            map: RawStore::new(file, b"checker")?,
+            map: RawStore::options().exact_spec_magic(b"checker").new(file)?,
         })
     }
 
@@ -118,9 +118,9 @@ impl<N: Hash + Eq + Debug + Copy> Checker<N> {
     }
 
     pub fn reopen(&mut self) -> Result<(), CheckerError> {
-        let map = std::mem::replace(&mut self.map, RawStore::new(Backing::new_anon()?, b"")?);
+        let map = std::mem::replace(&mut self.map, RawStore::options().new(Backing::new_anon()?)?);
         let backing = map.close()?;
-        let map = RawStore::open(backing, b"checker")?;
+        let map = RawStore::options().exact_spec_magic(b"checker").open(backing)?;
         self.map = map;
         Ok(())
     }

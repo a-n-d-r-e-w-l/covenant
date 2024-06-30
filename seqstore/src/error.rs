@@ -101,7 +101,7 @@ impl Display for Error {
     }
 }
 
-/// Errors that can be encountered while [open][crate::raw_store::RawStore::open]ing a map.
+/// Errors that can be encountered while [open][crate::raw_store::OpenStoreOptions::open]ing a map.
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum OpenError {
@@ -117,13 +117,13 @@ pub enum OpenError {
     /// The header's specialized magic bytes did not match the expected length.
     ///
     /// For more detail about header specialization, see the section in
-    /// [`RawStore::new(..)`][crate::raw_store::RawStore::new].
+    /// [`OpenStoreOptions`][crate::raw_store::OpenStoreOptions#header-specialization].
     #[error("mismatch between spec magic: expected {} bytes, found {}", .expected, .found)]
     SpecMagicLen { found: usize, expected: usize },
     /// The header's specialized magic bytes were invalid.
     ///
     /// For more detail about header specialization, see the section in
-    /// [`RawStore::new(..)`][crate::raw_store::RawStore::new].
+    /// [`OpenStoreOptions`][crate::raw_store::OpenStoreOptions#header-specialization].
     #[error("mismatch between spec magic: expected {:?}, found {:?}", .expected, .found)]
     SpecMagic { found: BString, expected: BString },
     /// The header version is unknown.

@@ -116,8 +116,8 @@ impl MagicTag {
         }
     }
 
-    pub(crate) fn write_exact(self, backing: &mut BackingInner, position: &mut usize, n: usize) -> Result<(), Error> {
-        assert!(n <= 0b11 + 1, "length is too large to store item");
+    pub(crate) fn write_exact(self, backing: &mut BackingInner, position: &mut usize, tag_len: usize) -> Result<(), Error> {
+        assert!(tag_len <= 0b11 + 1, "length is too large to store item");
         let (tag, len) = match self {
             Self::Writing { length } => (Self::WRITING, length),
             Self::Written { length } => (Self::WRITTEN, length),
@@ -127,11 +127,11 @@ impl MagicTag {
 
         let needed_bits = 64 - len.leading_zeros();
         let needed_bytes = needed_bits.saturating_sub(3).div_ceil(8); // 3 bits can be stored in tag
-        if 1 + needed_bytes > n as _ {
-            panic!("required {} bytes, have {}", 1 + needed_bytes, n)
+        if 1 + needed_bytes > tag_len as _ {
+            panic!("required {} bytes, have {}", 1 + needed_bytes, tag_len)
         }
 
-        if self.written_length() == n {
+        if self.written_length() == tag_len {
             return self.write(backing, position);
         }
 
@@ -139,7 +139,7 @@ impl MagicTag {
             // TODO: Is this not caught by the above check?
             let start = *position;
             self.write(backing, position)?;
-            assert_eq!(*position, start + n);
+            assert_eq!(*position, start + tag_len);
         }
 
         // Otherwise, we don't _need_ to pack any bits in the tag
