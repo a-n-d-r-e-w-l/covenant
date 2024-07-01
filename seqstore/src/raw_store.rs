@@ -1,8 +1,6 @@
-use std::ops::ControlFlow;
-
 use crate::{
     backing::{Backing, BackingInner},
-    error::{Error, RetainError},
+    error::Error,
     tag::MagicTag,
     Id,
 };
@@ -287,86 +285,6 @@ impl RawStore {
             });
         }
         Ok(())
-    }
-
-    /// Removes any items not given by `known_ids`. `known_ids` mus be sorted in increasing order.
-    ///
-    /// **This is a dangerous operation** - any items not provided will be _permanently deleted_.
-    /// This is intended to be used rarely, such as after repairing a store, and should only be used
-    /// if you are _certain_ that you have every [`Id`] of this store you care about to hand.
-    ///
-    /// Should the scan stop - either because the next item was a [`ControlFlow::Break`] or because
-    /// `known_ids` were not in increasing order, any items after the last [`Id`] encountered will
-    /// not be changed.
-    ///
-    /// For example, assuming `1..=5` are valid keys:
-    /// - `1, 2, 5` would leave only `3, 4` as valid keys
-    /// - `1, 5, 3` would **delete `2, 3, 4`**, as the last increasing key encountered was `5`
-    /// - `1, 3, <break>` would delete `2` and nothing else
-    ///
-    /// As you can see from the second example, leaving `known_ids` unsorted can result in deleting
-    /// items that were included later - you should only call this when **absolutely certain** that
-    /// it is in order. Also, make sure you take a backup beforehand, just in case.
-    pub fn retain<E>(&mut self, known_ids: impl IntoIterator<Item = ControlFlow<E, Id>>) -> Result<Result<(), E>, RetainError> {
-        let mut position = self.header_length;
-
-        self.gaps.clear();
-        let mut previous: Option<Id> = None;
-        for known in known_ids {
-            let id = match known {
-                ControlFlow::Continue(id) => id,
-                ControlFlow::Break(e) => return Ok(Err(e)),
-            };
-            if let Some(p) = previous {
-                if p.at() >= id.at() {
-                    return Err(RetainError::UnsortedInputs(p, id));
-                }
-            }
-            previous = Some(id);
-
-            while position <= id.at() {
-                let here = position;
-                let tag = MagicTag::read(&self.backing[..], &mut position)?;
-                let tag_len = position - here;
-
-                match tag {
-                    MagicTag::End => {
-                        return Err(RetainError::General(Error::IncorrectTag {
-                            position: here,
-                            found: tag.into(),
-                            expected_kind: "Written",
-                        }))
-                    }
-                    MagicTag::Deleted { length } => {
-                        position += length as usize;
-                        continue;
-                    }
-                    _ => {}
-                }
-
-                if id.at() == here {
-                    match tag {
-                        MagicTag::Writing { .. } => return Err(RetainError::RetainPartial { position: here }),
-                        MagicTag::Written { length } => {
-                            id.verify(length)?;
-                            position += length as usize;
-                            continue;
-                        }
-                        MagicTag::Deleted { .. } | MagicTag::End => unreachable!(),
-                    }
-                } else {
-                    match tag {
-                        MagicTag::Writing { length } | MagicTag::Written { length } => {
-                            position = here;
-                            self.erase(&mut position, tag_len, length as usize)?;
-                        }
-                        MagicTag::Deleted { .. } | MagicTag::End => unreachable!(),
-                    }
-                }
-            }
-        }
-
-        Ok(Ok(()))
     }
 
     /// Provides read-only access to the entire underlying bytes, header and post-end padding

@@ -144,23 +144,6 @@ pub enum OpenError {
     NoEnd,
 }
 
-/// Errors that can be encountered while calling [`retain(..)`][crate::raw_store::RawStore::retain].
-#[derive(Debug, Error)]
-#[non_exhaustive]
-pub enum RetainError {
-    /// Any normal error.
-    #[error(transparent)]
-    General(#[from] Error),
-    /// The [`retain(..)`][crate::raw_store::RawStore::retain] operation expects the given [`Id`]s
-    /// to be sorted in increasing order.
-    #[error("expected inputs to be sorted: given {:?} before {:?}", .0, .1)]
-    UnsortedInputs(Id, Id),
-    /// One of the [`Id`]s given to [`retain(..)`][crate::raw_store::RawStore::retain] pointed to
-    /// partially-written data.
-    #[error("attempted to retain partially-written data at 0x{:X}", .position)]
-    RetainPartial { position: usize },
-}
-
 // This exists to prevent a `private_interfaces` warning without exposing MagicTag
 /// An opaque representation of the internal tag structure.
 ///

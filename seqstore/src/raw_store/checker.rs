@@ -1,5 +1,4 @@
 use std::{
-    collections::HashSet,
     fmt::{Debug, Formatter},
     hash::Hash,
 };
@@ -16,7 +15,6 @@ pub enum CheckItem<'a, N> {
     Add(N, &'a [u8]),
     Remove(N),
     Check(N),
-    Retain(&'a [N]),
     CheckAll,
     Debug,
     Print,
@@ -31,7 +29,6 @@ impl<N: Debug> Debug for CheckItem<'_, N> {
             Self::CheckAll => f.debug_tuple("CheckAll").finish(),
             Self::Debug => f.debug_tuple("Debug").finish(),
             Self::Print => f.debug_tuple("Print").finish(),
-            Self::Retain(names) => f.debug_tuple("Retain").field(names).finish(),
         }
     }
 }
@@ -100,20 +97,6 @@ impl<N: Hash + Eq + Debug + Copy> Checker<N> {
                 self.map.with_bytes(|b| trace!("{:?}", BStr::new(b.trim_end_with(|b| b == '\0'))));
                 Ok(None)
             }
-            CheckItem::Retain(names) => {
-                let mut ids = names.iter().filter_map(|name| self.names.get(name).copied()).collect::<Vec<_>>();
-                ids.sort_by(Id::file_sort);
-                ids.dedup();
-                let r = ids.iter().copied().map(std::ops::ControlFlow::Continue::<std::convert::Infallible, _>);
-                self.map.retain(r).map_err(CheckerError::Retain)?.unwrap();
-
-                let ids = ids.into_iter().map(Id::pack).collect::<HashSet<_>>();
-
-                self.names.retain(|_, id| ids.contains(&id.pack()));
-                self.check.retain(|id, _| ids.contains(id));
-
-                Ok(None)
-            }
         }
     }
 
@@ -149,8 +132,6 @@ impl<N: Hash + Eq + Debug + Copy> Checker<N> {
 pub enum CheckerError {
     #[error(transparent)]
     Map(#[from] crate::error::Error),
-    #[error(transparent)]
-    Retain(#[from] crate::error::RetainError),
     #[error(transparent)]
     Open(#[from] crate::error::OpenError),
     #[error("mismatch: expected {:?}, found {:?}", .expected, .found)]

@@ -1,5 +1,4 @@
 use std::{
-    cmp::Ordering,
     fmt::{Debug, Formatter},
     num::NonZeroU64,
 };
@@ -49,15 +48,6 @@ impl Id {
         let r = length.to_ne_bytes().iter().copied().reduce(std::ops::BitXor::bitxor).unwrap();
         let reduce = (r & 0b11) ^ ((r & 0b1100) >> 2) ^ ((r & 0b110000) >> 4) ^ ((r & 0b11000000) >> 6);
         lz | (first << 2) | (last << 4) | (reduce) << 6
-    }
-
-    // TEMP: Only required due to restrictions on `retain`
-    pub fn file_sort(a: &Self, b: &Self) -> Ordering {
-        let o = a.at.cmp(&b.at);
-        if matches!(o, Ordering::Equal) {
-            assert_eq!(a.marker, b.marker)
-        }
-        o
     }
 
     pub fn pack(self) -> PackedId {
