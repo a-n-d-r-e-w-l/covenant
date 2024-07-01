@@ -152,7 +152,7 @@ impl RawStore {
         }
         let mut hpos = Self::HEADER_MAGIC.len();
         let v: [u8; 2] = (&header[hpos..hpos + Self::HEADER_VERSION.len()]).try_into().unwrap();
-        if v[..] != Self::HEADER_VERSION {
+        if v != Self::HEADER_VERSION {
             return Err(OpenError::UnknownVersion(v));
         }
         hpos += Self::HEADER_VERSION.len();

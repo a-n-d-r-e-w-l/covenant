@@ -46,17 +46,6 @@ pub enum Error {
     EntryCorrupt { position: usize },
     /// Attempted to delete an already-deleted item.
     AlreadyDeleted { position: usize },
-    /// Attempted to [`replace(..)`][crate::raw_store::RawStore::replace] a deleted item.
-    ///
-    /// The `replace` operation should only be used to update written data - there is no functionality
-    /// to request that **new** data be written at a specific location.
-    CannotReplaceDeleted { position: usize },
-    /// Attempted to [`replace(..)`][crate::raw_store::RawStore::replace] an item with data of a
-    /// different length.
-    ///
-    /// The `replace` operation only supports replacing data in-place if the new data has the same length
-    /// as the old data.
-    MismatchedLengths { position: usize, new: usize, old: usize },
     /// A [varint][varuint]-encoded integer failed to read.
     ///
     /// As varints are (currently) only used in the header, this likely means that the file has been
@@ -87,13 +76,6 @@ impl Display for Error {
             }
             Self::EntryCorrupt { position } => write!(f, "previous write at 0x{position:X} was interrupted, this entry is corrupt"),
             Self::AlreadyDeleted { position } => write!(f, "attempted to delete already deleted item at 0x{position:X}"),
-            Self::CannotReplaceDeleted { position } => write!(f, "attempted to replace deleted item at 0x{position:X}"),
-            Self::MismatchedLengths { position, new, old } => {
-                write!(
-                    f,
-                    "cannot replace data of length {new} at 0x{position:X} with data of length {old}"
-                )
-            }
             Self::InvalidVarint { position } => {
                 write!(f, "invalid packed integer or EOF at 0x{:X}", position)
             }

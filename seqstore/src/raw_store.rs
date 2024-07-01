@@ -127,39 +127,6 @@ impl RawStore {
         Ok(Id::new(start, bytes.len()))
     }
 
-    /// Replaces the data stored at `at` with `with`, as long as the **new data has the same
-    /// length as the old data**.
-    ///
-    /// `f` is given a view of the old data.
-    pub fn replace<R>(&mut self, at: Id, with: &[u8], f: impl FnOnce(&[u8]) -> R) -> Result<R, Error> {
-        let mut position = at.at();
-        let tag = MagicTag::read(&self.backing, &mut position)?;
-        match tag {
-            MagicTag::Written { length } => {
-                at.verify(length)?;
-                if length as usize != with.len() {
-                    Err(Error::MismatchedLengths {
-                        position: at.at(),
-                        new: with.len(),
-                        old: length as usize,
-                    })
-                } else {
-                    let r = f(&self.backing[position..position + with.len()]);
-                    self.backing[position..position + with.len()].copy_from_slice(with);
-                    self.backing.flush_range(position, with.len())?;
-                    Ok(r)
-                }
-            }
-            MagicTag::Writing { .. } => Err(Error::EntryCorrupt { position: at.at() }),
-            MagicTag::Deleted { .. } => Err(Error::CannotReplaceDeleted { position: at.at() }),
-            other => Err(Error::IncorrectTag {
-                position: at.at(),
-                found: other.into(),
-                expected_kind: "Written",
-            }),
-        }
-    }
-
     /// Gets the data stored at `at`, gives a view of it to `f`, and returns the result.
     ///
     /// `at` must be valid and correct _i.e._ in **this** map it must point to fully-written and

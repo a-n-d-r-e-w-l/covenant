@@ -110,6 +110,7 @@ impl BackingInner {
         Ok(())
     }
 
+    /// Ensures there is enough space. Will not truncate.
     pub(crate) fn resize_for(&mut self, len: usize) -> Result<(), Error> {
         if self.len() <= len {
             self.resize_to(((len / 256) + 1) * 256)?;
@@ -117,6 +118,7 @@ impl BackingInner {
         Ok(())
     }
 
+    /// Sets the size. This will truncate.
     fn resize_to(&mut self, size: usize) -> Result<(), Error> {
         match self {
             BackingInner::File { file, map } => {
