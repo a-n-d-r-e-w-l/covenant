@@ -298,7 +298,7 @@ impl Database {
 
     /// Retrieves the value associated with `key` from the map. This method will always return the
     /// latest value set for `key`.
-    pub fn get(&mut self, key: &[u8]) -> Option<u64> {
+    pub fn get(&self, key: &[u8]) -> Option<u64> {
         if let Some(id) = self.held.get(key) {
             return Some(*id);
         }

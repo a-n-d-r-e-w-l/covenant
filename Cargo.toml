@@ -3,4 +3,5 @@ resolver = "2"
 members = [
     "phobos",
     "seqstore",
+    "int-multistore",
 ]

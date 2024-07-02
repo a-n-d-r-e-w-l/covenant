@@ -1,0 +1,13 @@
+[package]
+name = "int-multistore"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+phobos = { path = "../phobos" }
+seqstore = { path = "../seqstore" }
+
+anyhow = "1.0.86"
+varuint = "0.7.1"
+bytes = "1.6.0"
+fs-err = "2.11.0"
