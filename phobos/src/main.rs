@@ -9,7 +9,7 @@ fn main() -> anyhow::Result<()> {
             db.set(Bytes::from(format!("{:x}", i)), i)?;
         }
         // db.flush()?;
-        db.merge()?;
+        db.merge(|_, _| Ok(()))?;
     }
 
     {

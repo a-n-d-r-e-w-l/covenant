@@ -11,6 +11,8 @@ pub mod checker;
 
 mod open;
 pub use open::{OpenStoreOptions, RecoveryStrategy};
+mod filter;
+pub use filter::Filter;
 
 /// A "raw" [`Id`]-to-bytes store, either file-backed or entirely in memory, where [`Id`] is
 /// represented by an opaque (_i.e._ not corresponding to file offset) [`u64`].

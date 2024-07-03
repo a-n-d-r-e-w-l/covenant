@@ -28,6 +28,14 @@ impl IntsStore {
         Self::create(backing, OpenStoreOptions::open)
     }
 
+    pub fn close(self) -> Result<Backing, Error> {
+        self.0.close()
+    }
+
+    pub fn filter(&self, to: Backing) -> Result<seqstore::raw_store::Filter<'_>, Error> {
+        self.0.filter(to)
+    }
+
     pub fn get(&self, idx: Idx) -> anyhow::Result<impl Iterator<Item = NonZeroU64>> {
         self.0.get(idx.0, Stored::load).map(Stored::items).map_err(Into::into)
     }
@@ -66,6 +74,10 @@ impl Idx {
 
     pub(crate) fn from_packed(n: seqstore::PackedId) -> Self {
         Self(seqstore::Id::from_packed(n))
+    }
+
+    pub(crate) fn as_id(&self) -> seqstore::Id {
+        self.0
     }
 }
 

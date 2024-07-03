@@ -113,7 +113,7 @@ impl DatabaseOptions {
         };
 
         if self.merge_on_open {
-            s.merge()?;
+            s.merge(|_, _| Ok(()))?;
         }
 
         Ok(s)
@@ -313,7 +313,7 @@ impl Database {
         found.into_iter().max_by_key(|(f, _)| f.id).map(|(_, v)| v)
     }
 
-    fn merge_fsts(&mut self, filter: impl Fn(&LevelFst) -> bool) -> anyhow::Result<()> {
+    fn merge_fsts(&mut self, filter: impl Fn(&LevelFst) -> bool, mut callback: impl FnMut(Bytes, u64) -> anyhow::Result<()>) -> anyhow::Result<()> {
         let mut items = self.held.drain().collect::<Vec<_>>();
         items.sort_by(|(a, _), (b, _)| a.cmp(b).reverse());
 
@@ -343,13 +343,14 @@ impl Database {
 
         let mut count = 0;
         let mut previous: Option<Bytes> = None;
-        let mut add = |key: Bytes, value| {
+        let mut add = |key: Bytes, value| -> anyhow::Result<()> {
             if previous.as_ref().is_some_and(|p| *p == key) {
                 return Ok(());
             }
             count += 1;
             previous = Some(key.clone());
-            builder.insert(key, value)
+            callback(key.clone(), value)?;
+            builder.insert(key, value).map_err(Into::into)
         };
 
         while let Some((key, idxs)) = stream.next() {
@@ -442,18 +443,18 @@ impl Database {
         }
 
         if let Some(max) = maximum_level {
-            self.merge_fsts(|f| f.level <= max)?;
+            self.merge_fsts(|f| f.level <= max, empty_callback)?;
         } else {
-            self.merge_fsts(|_| false)?;
+            self.merge_fsts(|_| false, empty_callback)?;
         }
 
         Ok(())
     }
 
     /// Merges all in-memory and on-disk data into a single FST.
-    pub fn merge(&mut self) -> anyhow::Result<()> {
+    pub fn merge(&mut self, callback: impl FnMut(Bytes, u64) -> anyhow::Result<()>) -> anyhow::Result<()> {
         self.fst_count = 0;
-        self.merge_fsts(|_| true)
+        self.merge_fsts(|_| true, callback)
     }
 
     fn calculate_level(&self, count: usize) -> u8 {
@@ -479,10 +480,10 @@ impl Pather {
     fn new(base: PathBuf, prefix: String) -> anyhow::Result<Self> {
         Ok(Self {
             index: base.join(format!("{prefix}.idx")),
-            index_write: base.join(format!("~{prefix}.idx")),
+            index_write: base.join(format!(".{prefix}.idx~")),
             log: base.join(format!("{prefix}.log")),
-            log_backup: base.join(format!("~{prefix}.log")),
-            write_fst: base.join(format!("~{prefix}._.fst")),
+            log_backup: base.join(format!(".{prefix}.log~")),
+            write_fst: base.join(format!(".{prefix}._.fst~")),
 
             prefix,
             base,
@@ -602,4 +603,9 @@ impl Index {
 
         Ok(Self { fsts })
     }
+}
+
+#[inline(always)]
+fn empty_callback(_: Bytes, _: u64) -> anyhow::Result<()> {
+    Ok(())
 }

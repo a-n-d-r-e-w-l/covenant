@@ -8,6 +8,8 @@ pub mod ints_store;
 pub struct Lookup {
     fsts: phobos::Database,
     lookup: ints_store::IntsStore,
+    dir: PathBuf,
+    name: String,
 }
 
 impl Lookup {
@@ -16,12 +18,17 @@ impl Lookup {
             .read(true)
             .write(true)
             .create(true)
-            .open(dir.join(format!("{name}.lkp")))?;
+            .open(dir.join(file_name(name)))?;
         let backing = unsafe { Backing::new_file(lookup_file.into_parts().0) }?;
         let lookup = ints_store::IntsStore::new(backing)?;
-        let opts = phobos::Database::builder(dir, name.to_owned()).create(true);
+        let opts = phobos::Database::builder(dir.clone(), name.to_owned()).create(true);
         let fsts = unsafe { opts.open() }?;
-        Ok(Self { fsts, lookup })
+        Ok(Self {
+            fsts,
+            lookup,
+            dir,
+            name: name.to_owned(),
+        })
     }
 
     pub unsafe fn open(dir: PathBuf, name: &str) -> anyhow::Result<Self> {
@@ -29,12 +36,44 @@ impl Lookup {
             .read(true)
             .write(true)
             .create(false)
-            .open(dir.join(format!("{name}.lkp")))?;
+            .open(dir.join(file_name(name)))?;
         let backing = unsafe { Backing::new_file(lookup_file.into_parts().0) }?;
         let lookup = ints_store::IntsStore::open(backing)?;
-        let opts = phobos::Database::builder(dir, name.to_owned()).create(false);
+        let opts = phobos::Database::builder(dir.clone(), name.to_owned()).create(false);
         let fsts = unsafe { opts.open() }?;
-        Ok(Self { fsts, lookup })
+        Ok(Self {
+            fsts,
+            lookup,
+            dir,
+            name: name.to_owned(),
+        })
+    }
+
+    pub fn cleanup(&mut self) -> anyhow::Result<()> {
+        let write_path = self.dir.join(format!(".{}.lkp~", self.name));
+        let new_file = fs_err::OpenOptions::new().read(true).write(true).create(true).open(&write_path)?;
+        let working = unsafe { Backing::new_file(new_file.into_parts().0) }?;
+        let mut filter = self.lookup.filter(working)?;
+        self.fsts.merge(|_, id| {
+            if let Some(id) = ints_store::Idx::new(id) {
+                filter.add(id.as_id())?;
+            }
+            Ok(())
+        })?;
+        filter.finish()?;
+        let old = std::mem::replace(&mut self.lookup, ints_store::IntsStore::new(Backing::new_anon()?)?);
+        // We want to _explicitly_ drop this here before moving files around on disk
+        // to make it clear that the safety requirements are met. (simply discarding it would
+        // still uphold the requirements, but it's better to be explicit)
+        drop(old.close()?);
+
+        let active_path = self.dir.join(file_name(&self.name));
+        fs_err::rename(&write_path, &active_path)?;
+
+        let file = fs_err::OpenOptions::new().read(true).write(true).create(false).open(active_path)?;
+        let new = unsafe { Backing::new_file(file.into_parts().0) }?;
+        self.lookup = ints_store::IntsStore::open(new)?;
+        Ok(())
     }
 
     pub fn flush(&mut self) -> anyhow::Result<()> {
@@ -71,4 +110,8 @@ impl Lookup {
         self.fsts.set(Bytes::copy_from_slice(hash), id.get())?;
         Ok(ints_store::Idx::from_packed(id))
     }
+}
+
+fn file_name(name: &str) -> String {
+    format!("{name}.lkp")
 }
