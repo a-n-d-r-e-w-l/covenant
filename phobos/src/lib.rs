@@ -359,7 +359,12 @@ impl Database {
                 let (id, d) = items.pop().unwrap();
                 add(id, d)?;
             }
-            add(Bytes::from(key.to_owned()), max.value)?;
+            if items.last().is_some_and(|(d, _)| d == key) {
+                let (id, d) = items.pop().unwrap();
+                add(id, d)?;
+            } else {
+                add(Bytes::from(key.to_owned()), max.value)?;
+            }
         }
 
         while let Some((id, d)) = items.pop() {

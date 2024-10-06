@@ -1,6 +1,6 @@
 use std::fmt::{Debug, Display, Formatter};
 
-use bstr::{BStr, BString};
+use bstr::BString;
 use thiserror::Error;
 
 use crate::Id;
@@ -19,15 +19,7 @@ pub enum Error {
     /// Encountered an unknown tag.
     ///
     /// This almost certainly means that an incorrect or invalid [`Id`] was given as an argument.
-    UnknownTag {
-        position: usize,
-        /// A few bytes surrounding the invalid tag, possibly zero-filled if at the start or
-        /// end of the data.
-        ///
-        /// Intended only for debugging purposes - do not rely on this remaining of size 7.
-        surrounding: [u8; 7],
-        byte: u8,
-    },
+    UnknownTag { position: usize, byte: u8 },
     /// Encountered an invalid tag for the desired operation.
     ///
     /// This most likely means that an incorrect [`Id`] has been given as an argument.
@@ -59,11 +51,7 @@ impl Display for Error {
             Self::Resize(e) => write!(f, "could not resize backing: {e}"),
             Self::Flush(e) => write!(f, "could not flush data: {e}"),
             Self::Map(e) => write!(f, "could not create memory map: {e}"),
-            Self::UnknownTag { position, surrounding, byte } => write!(
-                f,
-                "unknown tag {byte:08b} at position 0x{position:X} - {:?}",
-                BStr::new(surrounding)
-            ),
+            Self::UnknownTag { position, byte } => write!(f, "unknown tag {byte:08b} at position 0x{position:X}",),
             Self::IncorrectTag {
                 position,
                 found,

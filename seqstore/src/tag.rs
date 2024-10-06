@@ -54,14 +54,9 @@ impl MagicTag {
                 length: read_with_length(tag, backing, position)?,
             }),
             _ => {
-                let mut surrounding = [0; 7];
                 *position -= 1;
-                let end = (*position + 3).clamp(0, backing.len());
-                let o = 3_usize.saturating_sub(*position);
-                surrounding[o..(o + end - *position).clamp(0, 7)].copy_from_slice(&backing[position.saturating_sub(3)..end]);
                 Err(Error::UnknownTag {
                     position: *position,
-                    surrounding,
                     byte: tag,
                 })
             }
