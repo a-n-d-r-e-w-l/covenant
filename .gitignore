@@ -1,1 +1,7 @@
 /target
+
+# Cargo.lock is normally committed to ensure build reproducability and preventing issues with dependency updates.
+# As `bench/` is only a development tool this is significantly less important.
+bench/Cargo.lock
+bench/target
+bench/storage

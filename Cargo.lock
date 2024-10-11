@@ -343,18 +343,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40ecd4077b5ae9fd2e9e169b102c6c330d0605168eb0e8bf79952b256dbefffd"
 
 [[package]]
-name = "int-multistore"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytes",
- "fs-err",
- "seqstore",
- "phobos",
- "varuint",
-]
-
-[[package]]
 name = "hashbrown"
 version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -374,6 +362,18 @@ checksum = "168fb715dda47215e360912c096649d23d58bf392ac62f73919e831745e40f26"
 dependencies = [
  "equivalent",
  "hashbrown",
+]
+
+[[package]]
+name = "int-multistore"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "fs-err",
+ "phobos",
+ "seqstore",
+ "varuint",
 ]
 
 [[package]]
@@ -524,23 +524,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "seqstore"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arbitrary",
- "bstr",
- "indexmap",
- "log",
- "memmap2",
- "rand",
- "serde",
- "simplelog",
- "thiserror",
- "varuint",
-]
-
-[[package]]
 name = "phobos"
 version = "0.1.0"
 dependencies = [
@@ -657,6 +640,23 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+
+[[package]]
+name = "seqstore"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arbitrary",
+ "bstr",
+ "indexmap",
+ "log",
+ "memmap2",
+ "rand",
+ "serde",
+ "simplelog",
+ "thiserror",
+ "varuint",
+]
 
 [[package]]
 name = "serde"

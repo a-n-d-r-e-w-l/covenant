@@ -1,0 +1,17 @@
+[package]
+name = "bench"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+int-multistore = { path = "../int-multistore" }
+rusqlite = { version = "0.32.0", features = ["bundled"] }
+
+anyhow = "1.0.86"
+fs-err = "2.11.0"
+rand = "0.8.5"
+rand_pcg = "0.3.1"
+bstr = "1.10.0"
+kdam = "0.5.2"
+cli-table = "0.4.9"
