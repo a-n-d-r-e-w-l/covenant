@@ -397,10 +397,10 @@ impl Database {
         let merged = to_merge.iter().map(|r| r.id).collect::<HashSet<_>>();
         let to_remove = to_merge.iter().map(|f| (f.id, f.level)).collect::<Vec<_>>();
 
+        self.fsts.retain(|it| !merged.contains(&it.id));
         if let Some(new) = new {
             self.fsts.push(new);
         }
-        self.fsts.retain(|it| !merged.contains(&it.id));
         self.write_index()?;
 
         for (merged_id, merged_level) in to_remove {
@@ -415,6 +415,8 @@ impl Database {
         self.log(LogItem::Flushed)?;
         self.log_file.rewind()?;
         self.log_file.set_len(0)?;
+
+        // dbg!(&self.fsts);
 
         Ok(())
     }
